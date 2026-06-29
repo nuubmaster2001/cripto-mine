@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Cripto Mine — scanner de gemas low-cap</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.4/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; }
+  body {
+    --bg:#0C0F14; --panel:#141A21; --panel2:#1A222B; --line:#232C36;
+    --text:#EAEEF2; --muted:#7E8B99; --faint:#4C5763;
+    --gold:#E8B33E; --teal:#34C6B8; --violet:#9D7BFF; --danger:#E5614F; --ok:#4FCB8B;
+    font-family:'Inter',system-ui,sans-serif; color:var(--text);
+    background:
+      radial-gradient(1200px 500px at 80% -10%, rgba(157,123,255,.08), transparent 60%),
+      radial-gradient(900px 400px at 0% 0%, rgba(52,198,184,.06), transparent 55%),
+      var(--bg);
+    min-height:100vh; -webkit-font-smoothing:antialiased;
+  }
+  #root { padding:18px 14px 60px; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  .wrap { max-width:1120px; margin:0 auto; }
+  .top { display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:16px; }
+  .brand { display:flex; align-items:center; gap:11px; }
+  .gemmark { width:30px; height:30px; filter:drop-shadow(0 0 8px rgba(232,179,62,.5)); }
+  .wordmark { font-family:'Space Grotesk'; font-weight:700; font-size:20px; letter-spacing:.5px; }
+  .wordmark b { color:var(--gold); }
+  .tag { font-size:11px; color:var(--muted); letter-spacing:.4px; margin-top:1px; }
+  .topright { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .volpill { font-size:11px; font-family:'JetBrains Mono'; color:var(--teal);
+    border:1px solid rgba(52,198,184,.3); background:rgba(52,198,184,.07); padding:6px 10px; border-radius:999px; white-space:nowrap; }
+  .scanbtn { font-family:'Space Grotesk'; font-weight:600; font-size:13px; letter-spacing:.3px;
+    color:#0C0F14; background:linear-gradient(135deg,var(--gold),#f2c45e); border:none; padding:9px 16px; border-radius:9px; cursor:pointer;
+    display:flex; align-items:center; gap:7px; transition:.15s; }
+  .scanbtn:hover { transform:translateY(-1px); box-shadow:0 6px 18px rgba(232,179,62,.25); }
+  .scanbtn:disabled { opacity:.55; cursor:default; transform:none; box-shadow:none; }
+  .stamp { font-size:10.5px; color:var(--faint); font-family:'JetBrains Mono'; }
+  .tabs { display:flex; gap:6px; margin-bottom:12px; }
+  .tab { font-size:13px; font-weight:600; color:var(--muted); background:transparent; border:1px solid var(--line);
+    padding:7px 14px; border-radius:8px; cursor:pointer; transition:.15s; }
+  .tab.on { color:var(--text); background:var(--panel); border-color:#33414f; }
+  .tab .cnt { color:var(--gold); margin-left:6px; font-family:'JetBrains Mono'; font-size:11px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:13px; }
+  .controls { padding:13px 14px; margin-bottom:14px; }
+  .crow { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; }
+  .field { display:flex; flex-direction:column; gap:5px; }
+  .field label { font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
+  input.inp, select.inp { font-family:'JetBrains Mono'; font-size:12.5px; color:var(--text); background:var(--panel2);
+    border:1px solid var(--line); border-radius:7px; padding:7px 9px; outline:none; width:108px; }
+  input.inp:focus, select.inp:focus { border-color:var(--teal); }
+  .inp.search { width:150px; }
+  .ghost { font-size:12px; color:var(--muted); background:transparent; border:1px solid var(--line);
+    padding:7px 11px; border-radius:7px; cursor:pointer; }
+  .ghost:hover { color:var(--text); border-color:#33414f; }
+  .tunehead { display:flex; align-items:center; justify-content:space-between; margin-top:13px; padding-top:12px; border-top:1px dashed var(--line); }
+  .tunehead span { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
+  .weights { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px 18px; margin-top:12px; }
+  .wt label { display:flex; justify-content:space-between; font-size:11.5px; color:var(--muted); margin-bottom:4px; }
+  .wt label b { color:var(--text); font-family:'JetBrains Mono'; font-weight:500; }
+  .wt input[type=range]{ width:100%; accent-color:var(--gold); }
+  .list { display:flex; flex-direction:column; gap:9px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:12px 13px;
+    display:grid; grid-template-columns:auto 1fr auto; gap:13px; align-items:center; transition:.15s; }
+  .card:hover { border-color:#33414f; }
+  .card.elite { border-color:rgba(157,123,255,.4); box-shadow:0 0 0 1px rgba(157,123,255,.12) inset, 0 8px 30px rgba(157,123,255,.07); }
+  .rank { font-family:'JetBrains Mono'; font-size:12px; color:var(--faint); width:24px; text-align:center; }
+  .gem { width:60px; text-align:center; }
+  .gembadge { width:52px; height:52px; margin:0 auto; display:flex; align-items:center; justify-content:center;
+    clip-path:polygon(50% 0,100% 30%,82% 100%,18% 100%,0 30%); }
+  .gemscore { font-family:'Space Grotesk'; font-weight:700; font-size:19px; color:#0C0F14; }
+  .gemgrade { font-size:9px; letter-spacing:.6px; text-transform:uppercase; margin-top:5px; color:var(--muted); font-weight:600; }
+  .mid { min-width:0; }
+  .name { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .sym { font-family:'Space Grotesk'; font-weight:600; font-size:15.5px; }
+  .fullname { font-size:11.5px; color:var(--muted); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chip { font-size:9.5px; font-family:'JetBrains Mono'; text-transform:uppercase; letter-spacing:.4px;
+    padding:2px 6px; border-radius:5px; border:1px solid var(--line); color:var(--muted); }
+  .chip.chain { color:var(--teal); border-color:rgba(52,198,184,.3); background:rgba(52,198,184,.06); }
+  .chip.boost { color:var(--gold); border-color:rgba(232,179,62,.35); background:rgba(232,179,62,.08); }
+  .chip.cat { cursor:pointer; background:transparent; }
+  .chip.cat:hover { filter:brightness(1.25); }
+  .narr { margin-bottom:14px; }
+  .narrhead { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+  .narrhead span { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
+  .narrgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:9px; }
+  .narrcard { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:10px 12px; cursor:pointer; transition:.15s; }
+  .narrcard:hover { filter:brightness(1.08); }
+  .narrcard.on { box-shadow:0 0 0 1px currentColor inset; }
+  .narrtop { display:flex; align-items:baseline; gap:7px; }
+  .narrrank { font-family:'JetBrains Mono'; font-size:10px; color:var(--faint); }
+  .narrlabel { font-family:'Space Grotesk'; font-weight:700; font-size:15px; }
+  .narrbar { height:5px; background:var(--panel2); border-radius:3px; overflow:hidden; margin:8px 0 7px; }
+  .narrbar > div { height:100%; border-radius:3px; }
+  .narrstats { font-family:'JetBrains Mono'; font-size:10.5px; color:var(--muted); }
+  .metrics { display:flex; gap:16px; flex-wrap:wrap; margin-top:8px; }
+  .m { display:flex; flex-direction:column; }
+  .m .k { font-size:9.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--faint); }
+  .m .v { font-family:'JetBrains Mono'; font-size:12.5px; color:var(--text); margin-top:1px; }
+  .v.up { color:var(--ok); } .v.down { color:var(--danger); }
+  .bars { display:flex; gap:9px; margin-top:9px; flex-wrap:wrap; }
+  .ladder { display:flex; gap:14px; margin-top:8px; flex-wrap:wrap; }
+  .lad { display:flex; align-items:baseline; gap:5px; }
+  .lad .ll { font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:var(--faint); }
+  .lad .lv { font-family:'JetBrains Mono'; font-size:11px; color:var(--muted); }
+  .lad .lv.up { color:var(--ok); } .lad .lv.down { color:var(--danger); }
+  .bar { display:flex; flex-direction:column; gap:3px; width:62px; }
+  .bar .bk { font-size:8.5px; text-transform:uppercase; letter-spacing:.4px; color:var(--faint); }
+  .track { height:4px; background:var(--panel2); border-radius:3px; overflow:hidden; }
+  .fill { height:100%; border-radius:3px; }
+  .right { display:flex; flex-direction:column; gap:6px; align-items:stretch; min-width:118px; }
+  .act { font-size:11px; font-weight:600; text-align:center; text-decoration:none; padding:6px 8px; border-radius:7px;
+    border:1px solid var(--line); color:var(--muted); transition:.15s; cursor:pointer; background:transparent; display:block; }
+  .act:hover { color:var(--text); border-color:#33414f; }
+  .act.gmgn { color:var(--violet); border-color:rgba(157,123,255,.35); background:rgba(157,123,255,.06); }
+  .act.save { color:var(--gold); border-color:rgba(232,179,62,.3); }
+  .act.saved { color:#0C0F14; background:var(--gold); border-color:var(--gold); }
+  .state { text-align:center; padding:54px 20px; color:var(--muted); }
+  .state .big { font-family:'Space Grotesk'; font-size:17px; color:var(--text); margin-bottom:7px; }
+  .state .sub { font-size:13px; max-width:440px; margin:0 auto 16px; line-height:1.5; }
+  .spin { width:26px; height:26px; border:2.5px solid var(--line); border-top-color:var(--gold); border-radius:50%;
+    margin:0 auto 16px; animation:cmspin .8s linear infinite; }
+  @keyframes cmspin { to { transform:rotate(360deg); } }
+  .errbox { border:1px solid rgba(229,97,79,.35); background:rgba(229,97,79,.05); border-radius:11px; padding:16px; margin-bottom:14px; }
+  .errbox b { color:var(--danger); }
+  .manual { display:flex; gap:8px; margin-top:10px; justify-content:center; flex-wrap:wrap; }
+  .manual input { font-family:'JetBrains Mono'; font-size:12px; width:280px; max-width:70vw; background:var(--panel2);
+    border:1px solid var(--line); border-radius:7px; padding:8px 10px; color:var(--text); outline:none; }
+  .foot { text-align:center; font-size:10.5px; color:var(--faint); margin-top:22px; line-height:1.6; max-width:760px; margin-left:auto; margin-right:auto; }
+  @media (max-width:760px){
+    .card { grid-template-columns:auto 1fr; }
+    .right { grid-column:1 / -1; flex-direction:row; flex-wrap:wrap; min-width:0; }
+    .right .act { flex:1; min-width:84px; }
+    .inp { width:84px; } .inp.search { width:120px; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
+const DS = "https://api.dexscreener.com";
+
+const store = {
+  get(k){ try { const v = localStorage.getItem(k); return v ? { value:v } : null; } catch { return null; } },
+  set(k,v){ try { localStorage.setItem(k, v); } catch {} }
+};
+
+const CHAINS = ["solana","ethereum","bsc","base","arbitrum","polygon","tron","sui","avalanche","hyperliquid"];
+const CHAIN_LABEL = { bsc:"BSC", ethereum:"ETH", solana:"SOL", base:"BASE", arbitrum:"ARB", polygon:"POLY", tron:"TRON", sui:"SUI", avalanche:"AVAX", hyperliquid:"HYPE" };
+const GMGN_SLUG = { solana:"sol", ethereum:"eth", bsc:"bsc", base:"base", tron:"tron", blast:"blast", arbitrum:"arb", avalanche:"avax", polygon:"polygon" };
+const DEFAULT_W = { hype:22, momentum:20, liq:18, volume:15, buys:10, age:15 };
+const PRESETS = {
+  default: DEFAULT_W,
+  consolidation: { hype:20, momentum:8, liq:30, volume:12, buys:6, age:24 }
+};
+const sameW = (a,b) => ["hype","momentum","liq","volume","buys","age"].every(k => a[k]===b[k]);
+// per-chain discovery seeds: search pairs against each chain's main quote asset
+// GeckoTerminal network ids (lowercase, differ from DexScreener chain ids)
+const GT_NET = { bsc:"bsc", ethereum:"eth", solana:"solana", base:"base", arbitrum:"arbitrum", polygon:"polygon_pos", avalanche:"avax", sui:"sui", tron:"tron" };
+// quote/base assets that must never be treated as a candidate token
+const QUOTE_ASSETS = new Set(["WBNB","BNB","WETH","ETH","USDT","USDC","BUSD","DAI","SOL","WSOL","USD1","FDUSD","TUSD","WBTC","BTCB","USDB","WAVAX","WMATIC","WPOL","WTRX","USDE","CBBTC"]);
+
+const fmtUsd = (n) => {
+  if (n == null || isNaN(n)) return "—";
+  if (n >= 1e9) return "$" + (n/1e9).toFixed(2) + "B";
+  if (n >= 1e6) return "$" + (n/1e6).toFixed(2) + "M";
+  if (n >= 1e3) return "$" + (n/1e3).toFixed(1) + "K";
+  return "$" + n.toFixed(0);
+};
+const fmtPct = (n) => (n == null || isNaN(n)) ? "—" : (n>0?"+":"") + n.toFixed(1) + "%";
+const ageStr = (ms) => {
+  if (!ms) return "—";
+  const h = (Date.now() - ms) / 36e5;
+  if (h < 1) return Math.round(h*60) + "m";
+  if (h < 48) return h.toFixed(0) + "h";
+  return (h/24).toFixed(0) + "d";
+};
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+const volAccel = (t) => (t && t.vol24 > 0 && t.volH1 > 0 ? (t.volH1 * 24) / t.vol24 : 0);
+const fdvMult = (t) => (t && t.mcap > 0 && t.fdv > 0 ? t.fdv / t.mcap : 0);
+// always resolve the chart link to DexScreener (keep direct pair url if already DexScreener, else build from contract)
+const dexLink = (t) => (t && t.url && t.url.indexOf("dexscreener.com") >= 0) ? t.url : ("https://dexscreener.com/" + (t.chain||"") + "/" + (t.addr||""));
+
+// heuristic narrative classifier (name/symbol based — keyless, approximate)
+const CATS = [
+  { key:"ia", label:"IA", color:"#9D7BFF", kw:[/\bai\b/i,/ai$/i,/agent/i,/\bgpt/i,/\bllm\b/i,/neural/i,/cortex/i,/tensor/i,/intellig/i,/deepseek/i,/autonom/i,/\brobot/i,/\bmind\b/i] },
+  { key:"meme", label:"Meme", color:"#E8B33E", kw:[/doge/i,/shib/i,/\binu/i,/pepe/i,/wojak/i,/meme/i,/\bcat\b/i,/kitty/i,/floki/i,/bonk/i,/\bwif\b/i,/frog/i,/elon/i,/trump/i,/\bmaga\b/i,/\bbaby/i,/\bmoon/i,/giga/i,/chad/i,/pengu/i,/\bpump\b/i] },
+  { key:"rwa", label:"RWA", color:"#4FCB8B", kw:[/\brwa\b/i,/real.?world/i,/tokeniz/i,/estate/i,/\bgold\b/i,/treasur/i,/commodit/i,/equit/i] },
+  { key:"depin", label:"DePIN", color:"#34C6B8", kw:[/depin/i,/\bgpu\b/i,/render/i,/comput/i,/\bnode/i,/wireless/i,/bandwidth/i,/\biot\b/i,/sensor/i] },
+  { key:"gamefi", label:"GameFi", color:"#F2A65E", kw:[/game/i,/\bplay/i,/metavers/i,/\bnft/i,/guild/i,/quest/i,/casino/i,/\bbet\b/i,/gambl/i] },
+  { key:"defi", label:"DeFi", color:"#5FA8FF", kw:[/defi/i,/swap/i,/\bdex\b/i,/lend/i,/yield/i,/vault/i,/stak/i,/\bperp/i,/\bamm\b/i,/\bfarm/i,/\bdao\b/i,/liquid/i,/\bbank/i,/finance/i] },
+  { key:"social", label:"Social", color:"#FF8FB1", kw:[/social/i,/\bchat/i,/friend/i,/creator/i,/\bfan\b/i,/\bclub\b/i] },
+  { key:"infra", label:"Infra", color:"#8B97A3", kw:[/chain/i,/protocol/i,/\blayer/i,/rollup/i,/bridge/i,/\bzk\b/i,/modular/i,/validator/i] }
+];
+const OUTROS = { key:"outros", label:"Outros", color:"#566066" };
+function classifyToken(t) {
+  const s = ((t && t.sym) || "") + " " + ((t && t.fullname) || "");
+  for (const c of CATS) { if (c.kw.some(rx => rx.test(s))) return c; }
+  return OUTROS;
+}
+
+function gradeFor(score) {
+  if (score >= 88) return { name:"Flawless", color:"var(--violet)", grad:"linear-gradient(135deg,#b79bff,#7c5cff)", elite:true };
+  if (score >= 75) return { name:"Polished", color:"var(--gold)", grad:"linear-gradient(135deg,#f2c45e,#d89a1e)" };
+  if (score >= 60) return { name:"Cut", color:"var(--teal)", grad:"linear-gradient(135deg,#54d8cb,#28a99c)" };
+  if (score >= 40) return { name:"Rough", color:"#7fb0ab", grad:"linear-gradient(135deg,#7fb0ab,#4d7e79)" };
+  return { name:"Slag", color:"#5C6773", grad:"linear-gradient(135deg,#6b7783,#454f59)" };
+}
+function subScores(t) {
+  const liqHealth = clamp01((t.liq && t.mcap ? t.liq / t.mcap : 0) / 0.08);
+  const mom = 0.6*clamp01((t.ch6||0)/60) + 0.4*clamp01((t.ch24||0)/60);
+  const volTr = clamp01((t.mcap ? (t.vol24||0)/t.mcap : 0) / 0.8);
+  const tot = (t.buys||0)+(t.sells||0);
+  const buyP = tot ? clamp01(((t.buys/tot)-0.5)/0.3) : 0;
+  let age = 0.4;
+  const h = t.createdAt ? (Date.now()-t.createdAt)/36e5 : null;
+  if (h != null) {
+    if (h < 6) age = 0.3; else if (h < 48) age = 0.62;
+    else if (h < 24*30) age = 1.0; else if (h < 24*120) age = 0.68; else age = 0.42;
+  }
+  const boostN = clamp01(Math.log10((t.boost||0)+1)/3);
+  const social = clamp01((t.socials||0)/2);
+  const hype = 0.7*boostN + 0.3*social;
+  return { hype, momentum:mom, liq:liqHealth, volume:volTr, buys:buyP, age };
+}
+function scoreToken(t, w) {
+  const s = subScores(t);
+  const tw = (w.hype+w.momentum+w.liq+w.volume+w.buys+w.age) || 1;
+  const raw = (s.hype*w.hype + s.momentum*w.momentum + s.liq*w.liq + s.volume*w.volume + s.buys*w.buys + s.age*w.age) / tw;
+  return { score: Math.round(raw*100), sub:s };
+}
+async function getJSON(url) { const r = await fetch(url); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }
+function chunk(arr, n) { const o=[]; for (let i=0;i<arr.length;i+=n) o.push(arr.slice(i,i+n)); return o; }
+function foldPairs(pairs, boostMap) {
+  const byTok = new Map();
+  for (const p of pairs || []) {
+    const addr = p.baseToken && p.baseToken.address; if (!addr) continue;
+    if (QUOTE_ASSETS.has(((p.baseToken && p.baseToken.symbol) || "").toUpperCase())) continue;
+    const key = (p.chainId||"") + ":" + addr.toLowerCase();
+    const liq = (p.liquidity && p.liquidity.usd) || 0;
+    const prev = byTok.get(key);
+    if (!prev || liq > prev._liq) {
+      const bm = Math.max(boostMap.get(key) || 0, (p.boosts && p.boosts.active) || 0);
+      const socials = ((p.info && p.info.socials && p.info.socials.length) || 0) + ((p.info && p.info.websites && p.info.websites.length) || 0);
+      byTok.set(key, {
+        _liq: liq, key, chain:p.chainId, addr,
+        sym:(p.baseToken && p.baseToken.symbol) || "?", fullname:(p.baseToken && p.baseToken.name) || "",
+        price:parseFloat(p.priceUsd)||0, mcap:p.marketCap || p.fdv || 0, fdv:p.fdv || 0,
+        liq, vol24:(p.volume && p.volume.h24) || 0, volH1:(p.volume && p.volume.h1) || 0,
+        chM5:(p.priceChange && p.priceChange.m5) != null ? p.priceChange.m5 : null,
+        chH1:(p.priceChange && p.priceChange.h1) != null ? p.priceChange.h1 : null,
+        ch6:(p.priceChange && p.priceChange.h6) != null ? p.priceChange.h6 : null,
+        ch24:(p.priceChange && p.priceChange.h24) != null ? p.priceChange.h24 : null,
+        buys:(p.txns && p.txns.h24 && p.txns.h24.buys) || 0, sells:(p.txns && p.txns.h24 && p.txns.h24.sells) || 0,
+        createdAt:p.pairCreatedAt || 0, boost:bm, socials, url:p.url
+      });
+    }
+  }
+  return [...byTok.values()];
+}
+
+// fetch new + trending pools from GeckoTerminal for one network and normalize to token records
+async function foldGTNet(chainId, gtnet) {
+  const GT = "https://api.geckoterminal.com/api/v2";
+  const grab = (kind) => getJSON(GT + "/networks/" + gtnet + "/" + kind + "?include=base_token,quote_token").catch(()=>null);
+  const [np, tp] = await Promise.all([grab("new_pools"), grab("trending_pools")]);
+  const out = [];
+  [np, tp].forEach(resp => {
+    if (!resp || !resp.data) return;
+    const tokMap = new Map();
+    (resp.included||[]).forEach(it => { if (it.type === "token") tokMap.set(it.id, it.attributes||{}); });
+    resp.data.forEach(p => {
+      const a = p.attributes || {}, rel = p.relationships || {};
+      const btId = rel.base_token && rel.base_token.data && rel.base_token.data.id;
+      if (!btId) return;
+      const tk = tokMap.get(btId) || {};
+      const addr = tk.address || (btId.indexOf("_") >= 0 ? btId.slice(btId.indexOf("_")+1) : btId);
+      const sym = tk.symbol || "?";
+      if (QUOTE_ASSETS.has(sym.toUpperCase())) return;
+      const pc = a.price_change_percentage || {}, vol = a.volume_usd || {}, tx = (a.transactions && a.transactions.h24) || {};
+      const num = (x) => { const n = parseFloat(x); return isNaN(n) ? null : n; };
+      out.push({
+        _liq: num(a.reserve_in_usd)||0, key: chainId + ":" + addr.toLowerCase(), chain: chainId, addr,
+        sym, fullname: tk.name || "",
+        price: num(a.base_token_price_usd)||0,
+        mcap: num(a.market_cap_usd) || num(a.fdv_usd) || 0,
+        fdv: num(a.fdv_usd) || 0,
+        liq: num(a.reserve_in_usd) || 0,
+        vol24: num(vol.h24) || 0, volH1: num(vol.h1) || 0,
+        chM5: num(pc.m5), chH1: num(pc.h1), ch6: num(pc.h6), ch24: num(pc.h24),
+        buys: tx.buys || 0, sells: tx.sells || 0,
+        createdAt: a.pool_created_at ? Date.parse(a.pool_created_at) : 0,
+        boost: 0, socials: 0,
+        url: "https://www.geckoterminal.com/" + gtnet + "/pools/" + a.address
+      });
+    });
+  });
+  return out;
+}
+
+function App() {
+  const [tab, setTab] = useState("radar");
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const [raw, setRaw] = useState([]);
+  const [stamp, setStamp] = useState(null);
+  const [tune, setTune] = useState(false);
+  const [w, setW] = useState(DEFAULT_W);
+  const [watch, setWatch] = useState({});
+  const [manual, setManual] = useState("");
+  const [inspectedRaw, setInspectedRaw] = useState(null);
+  const [mcapMin, setMcapMin] = useState(20000);
+  const [mcapMax, setMcapMax] = useState(10000000);
+  const [liqMin, setLiqMin] = useState(20000);
+  const [chain, setChain] = useState("all");
+  const [maxAgeD, setMaxAgeD] = useState(0);
+  const [sortBy, setSortBy] = useState("score");
+  const [catFilter, setCatFilter] = useState("");
+  const [q, setQ] = useState("");
+
+  useEffect(() => {
+    const a = store.get("cm_weights"); if (a) { try { setW(JSON.parse(a.value)); } catch {} }
+    const b = store.get("cm_watch"); if (b) { try { setWatch(JSON.parse(b.value)); } catch {} }
+  }, []);
+  const persistW = useCallback((nw) => { setW(nw); store.set("cm_weights", JSON.stringify(nw)); }, []);
+  const toggleWatch = useCallback((t) => {
+    setWatch(prev => {
+      const next = { ...prev };
+      if (next[t.key]) delete next[t.key];
+      else next[t.key] = { sym:t.sym, chain:t.chain, addr:t.addr, url:t.url, savedAt:Date.now() };
+      store.set("cm_watch", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const scan = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const [profiles, bLatest, bTop] = await Promise.all([
+        getJSON(DS + "/token-profiles/latest/v1").catch(()=>[]),
+        getJSON(DS + "/token-boosts/latest/v1").catch(()=>[]),
+        getJSON(DS + "/token-boosts/top/v1").catch(()=>[])
+      ]);
+      const boostMap = new Map();
+      const seeds = new Map();
+      const addSeed = (it, boost) => {
+        if (!it || !it.chainId || !it.tokenAddress) return;
+        const key = it.chainId + ":" + it.tokenAddress.toLowerCase();
+        seeds.set(key, { chain:it.chainId, addr:it.tokenAddress });
+        if (boost != null) boostMap.set(key, Math.max(boostMap.get(key)||0, boost));
+      };
+      (profiles||[]).forEach(p => addSeed(p, null));
+      (bLatest||[]).forEach(b => addSeed(b, b.totalAmount || b.amount || 0));
+      (bTop||[]).forEach(b => addSeed(b, b.totalAmount || b.amount || 0));
+      const groups = chunk([...seeds.values()], 30);
+      let pairs = [];
+      for (const g of groups) {
+        const addrs = g.map(x => x.addr).join(",");
+        try { const data = await getJSON(DS + "/latest/dex/tokens/" + addrs); if (data && data.pairs) pairs = pairs.concat(data.pairs); } catch {}
+      }
+      // discovery via GeckoTerminal new/trending pools per network — surfaces real low-caps (fixes BSC; base token, not the WBNB quote)
+      let toks = foldPairs(pairs, boostMap);
+      const gtPairs = chain === "all" ? [["bsc","bsc"],["base","base"]] : (GT_NET[chain] ? [[chain, GT_NET[chain]]] : []);
+      for (const [cid, gtnet] of gtPairs) {
+        try { toks = toks.concat(await foldGTNet(cid, gtnet)); } catch {}
+      }
+      // dedupe by chain:addr, keep the richest (highest-liquidity) record
+      const merged = new Map();
+      toks.forEach(t => { const ex = merged.get(t.key); if (!ex || (t.liq||0) > (ex.liq||0)) merged.set(t.key, t); });
+      const finalToks = [...merged.values()];
+      setRaw(finalToks); setStamp(Date.now());
+      if (finalToks.length === 0) setErr("nodata");
+    } catch (e) {
+      setErr("network");
+    } finally { setLoading(false); }
+  }, [chain]);
+
+  useEffect(() => { scan(); }, [scan]);
+
+  const scoreOne = async () => {
+    const v = manual.trim(); if (!v) return;
+    setLoading(true); setErr(null);
+    try {
+      const [data, bLatest, bTop] = await Promise.all([
+        getJSON(DS + "/latest/dex/tokens/" + v),
+        getJSON(DS + "/token-boosts/latest/v1").catch(()=>[]),
+        getJSON(DS + "/token-boosts/top/v1").catch(()=>[])
+      ]);
+      const boostMap = new Map();
+      const addB = (b) => { if (b && b.chainId && b.tokenAddress) { const k = b.chainId + ":" + b.tokenAddress.toLowerCase(); boostMap.set(k, Math.max(boostMap.get(k)||0, b.totalAmount||b.amount||0)); } };
+      (bLatest||[]).forEach(addB); (bTop||[]).forEach(addB);
+      const toks = foldPairs((data && data.pairs) || [], boostMap);
+      if (toks.length === 0) setErr("notfound");
+      else { toks.sort((a,b)=>(b.liq||0)-(a.liq||0)); setInspectedRaw(toks[0]); }
+    } catch { setErr("network"); }
+    finally { setLoading(false); }
+  };
+
+  const chainVol = useMemo(() => {
+    const m = {}; raw.forEach(t => { m[t.chain] = (m[t.chain]||0) + (t.vol24||0); });
+    let best=null, bv=0; Object.entries(m).forEach(([c,v]) => { if (v>bv){bv=v;best=c;} });
+    return best ? { chain:best, vol:bv } : null;
+  }, [raw]);
+
+  const scored = useMemo(() => raw.map(t => ({ ...t, ...scoreToken(t, w), cat: classifyToken(t) })), [raw, w]);
+  const preCat = useMemo(() => {
+    const out = scored.filter(t => {
+      if (t.mcap < mcapMin || t.mcap > mcapMax) return false;
+      if (t.liq < liqMin) return false;
+      if (chain !== "all" && t.chain !== chain) return false;
+      if (maxAgeD > 0 && t.createdAt && (Date.now()-t.createdAt)/864e5 > maxAgeD) return false;
+      if (q && !((t.sym+" "+t.fullname).toLowerCase().includes(q.toLowerCase()))) return false;
+      return true;
+    });
+    const sorters = {
+      score: (a,b) => b.score - a.score,
+      mcap_desc: (a,b) => (b.mcap||0) - (a.mcap||0),
+      mcap_asc: (a,b) => (a.mcap||0) - (b.mcap||0),
+      newest: (a,b) => (b.createdAt||0) - (a.createdAt||0),
+      vol: (a,b) => (b.vol24||0) - (a.vol24||0),
+      accel: (a,b) => volAccel(b) - volAccel(a),
+      mom6: (a,b) => (b.ch6||0) - (a.ch6||0)
+    };
+    out.sort(sorters[sortBy] || sorters.score);
+    return out;
+  }, [scored, mcapMin, mcapMax, liqMin, chain, maxAgeD, q, sortBy]);
+  const filtered = useMemo(() => catFilter ? preCat.filter(t => t.cat && t.cat.key === catFilter) : preCat, [preCat, catFilter]);
+  const narratives = useMemo(() => {
+    const m = {};
+    preCat.forEach(t => {
+      const c = t.cat || OUTROS; if (c.key === "outros") return;
+      if (!m[c.key]) m[c.key] = { key:c.key, label:c.label, color:c.color, n:0, vol:0, heat:0, ign:0, momSum:0, scoreSum:0 };
+      const o = m[c.key]; o.n++; o.vol += t.vol24||0; o.momSum += (t.ch6||0); o.scoreSum += t.score;
+      if (volAccel(t) >= 3) o.ign++;
+      o.heat += clamp01(volAccel(t)/3)*2 + clamp01((t.ch6||0)/50)*1.5 + (t.score/100) + (t.boost>0?0.5:0);
+    });
+    return Object.values(m).sort((a,b) => b.heat - a.heat).slice(0,3);
+  }, [preCat]);
+  const watchList = useMemo(() => {
+    const inScan = new Map(scored.map(t => [t.key, t]));
+    return Object.keys(watch).map(k => inScan.get(k) || { ...watch[k], key:k, score:null, _stale:true });
+  }, [watch, scored]);
+  const inspected = useMemo(() => inspectedRaw ? { ...inspectedRaw, ...scoreToken(inspectedRaw, w), cat: classifyToken(inspectedRaw) } : null, [inspectedRaw, w]);
+
+  const rows = tab === "radar" ? filtered : watchList;
+  const WB = [["hype","HYPE","var(--gold)"],["momentum","MOM","var(--teal)"],["liq","LIQ","var(--teal)"],["volume","VOL","var(--gold)"],["buys","BUY","var(--ok)"],["age","AGE","var(--violet)"]];
+
+  const exportCSV = () => {
+    const cols = ["score","grade","sym","fullname","chain","contract","mcap","fdv","fdv_mult","liq","liq_mcap_pct","vol24","vol_accel","ch6","ch24","age_h","boost","url"];
+    const esc = (v) => { const s = (v==null?"":String(v)).replace(/"/g,'""'); return /[",\n]/.test(s) ? '"'+s+'"' : s; };
+    const lines = [cols.join(",")];
+    filtered.forEach(t => {
+      const ageH = t.createdAt ? ((Date.now()-t.createdAt)/36e5).toFixed(1) : "";
+      lines.push([
+        t.score, gradeFor(t.score).name, t.sym, t.fullname, t.chain, t.addr,
+        Math.round(t.mcap||0), Math.round(t.fdv||0), fdvMult(t).toFixed(2),
+        Math.round(t.liq||0), t.mcap?((t.liq/t.mcap)*100).toFixed(1):"",
+        Math.round(t.vol24||0), volAccel(t).toFixed(2),
+        t.ch6!=null?t.ch6:"", t.ch24!=null?t.ch24:"", ageH, Math.round(t.boost||0), t.url
+      ].map(esc).join(","));
+    });
+    const blob = new Blob([lines.join("\n")], { type:"text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "cripto-mine_radar_" + new Date().toISOString().slice(0,10) + ".csv";
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  };
+
+  const scoredCard = (t, i) => {
+    const g = gradeFor(t.score);
+    return (
+      <div className={"card"+(g.elite?" elite":"")} key={t.key}>
+        <div className="rank">{typeof i==="number" ? i+1 : "🔍"}</div>
+        <div style={{display:"flex",gap:13,alignItems:"center",minWidth:0}}>
+          <div className="gem">
+            <div className="gembadge" style={{background:g.grad}}><span className="gemscore">{t.score}</span></div>
+            <div className="gemgrade" style={{color:g.color}}>{g.name}</div>
+          </div>
+          <div className="mid">
+            <div className="name">
+              <span className="sym">{t.sym}</span>
+              <span className="chip chain">{CHAIN_LABEL[t.chain]||t.chain}</span>
+              {t.cat && <span className="chip cat" style={{color:t.cat.color,borderColor:t.cat.color+"66"}} onClick={()=>setCatFilter(catFilter===t.cat.key?"":t.cat.key)} title="filtrar por narrativa">{t.cat.label}</span>}
+              {t.boost>0 && <span className="chip boost">🔥 boost {Math.round(t.boost)}</span>}
+              {volAccel(t)>=3 && <span className="chip boost">⚡ ignição {volAccel(t).toFixed(1)}×</span>}
+              {fdvMult(t)>=2.5 && <span className="chip warn">⚠ FDV {fdvMult(t).toFixed(1)}×</span>}
+              {t.fullname && <span className="fullname">{t.fullname}</span>}
+            </div>
+            <div className="metrics">
+              <div className="m"><span className="k">MCap</span><span className="v">{fmtUsd(t.mcap)}</span></div>
+              <div className="m"><span className="k">FDV</span><span className="v">{fmtUsd(t.fdv)}</span></div>
+              <div className="m"><span className="k">Liq</span><span className="v">{fmtUsd(t.liq)}</span></div>
+              <div className="m"><span className="k">Liq/MC</span><span className="v">{t.mcap?((t.liq/t.mcap)*100).toFixed(0)+"%":"—"}</span></div>
+              <div className="m"><span className="k">Vol 24h</span><span className="v">{fmtUsd(t.vol24)}</span></div>
+              <div className="m"><span className="k">Vol accel</span><span className={"v "+(volAccel(t)>=1.5?"up":"")}>{volAccel(t)?volAccel(t).toFixed(1)+"×":"—"}</span></div>
+              <div className="m"><span className="k">Idade</span><span className="v">{ageStr(t.createdAt)}</span></div>
+            </div>
+            <div className="ladder">
+              {[["5m",t.chM5],["1h",t.chH1],["6h",t.ch6],["24h",t.ch24]].map(([lbl,v])=>(
+                <span key={lbl} className="lad"><span className="ll">{lbl}</span><span className={"lv "+(v>0?"up":v<0?"down":"")}>{fmtPct(v)}</span></span>
+              ))}
+            </div>
+            <div className="bars">
+              {WB.map(([k,lbl,col])=>(
+                <div className="bar" key={k}><span className="bk">{lbl}</span>
+                  <div className="track"><div className="fill" style={{width:Math.round(((t.sub&&t.sub[k])||0)*100)+"%",background:col}}/></div></div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="right">
+          <a className="act gmgn" href={"https://gmgn.ai/"+(GMGN_SLUG[t.chain]||t.chain)+"/token/"+t.addr} target="_blank" rel="noreferrer">segurança · GMGN</a>
+          <a className="act" href={dexLink(t)} target="_blank" rel="noreferrer">gráfico</a>
+          <button className={"act save"+(watch[t.key]?" saved":"")} onClick={()=>toggleWatch(t)}>{watch[t.key]?"✓ salvo":"+ watchlist"}</button>
+        </div>
+      </div>
+    );
+  };
+
+  const inspectFails = [];
+  if (inspected) {
+    if (inspected.mcap < mcapMin) inspectFails.push("mcap < mín");
+    if (inspected.mcap > mcapMax) inspectFails.push("mcap > máx ("+fmtUsd(mcapMax)+")");
+    if (inspected.liq < liqMin) inspectFails.push("liquidez < mín");
+    if (chain !== "all" && inspected.chain !== chain) inspectFails.push("rede ≠ "+(CHAIN_LABEL[chain]||chain));
+    if (maxAgeD > 0 && inspected.createdAt && (Date.now()-inspected.createdAt)/864e5 > maxAgeD) inspectFails.push("idade > máx");
+  }
+
+  return (
+    <div className="wrap">
+      <div className="top">
+        <div className="brand">
+          <svg className="gemmark" viewBox="0 0 32 32" fill="none">
+            <path d="M16 2 L29 11 L16 30 L3 11 Z" fill="url(#g)"/>
+            <path d="M3 11 H29 M16 2 L11 11 L16 30 L21 11 Z M11 11 L21 11" stroke="#0C0F14" strokeWidth="1" opacity=".55"/>
+            <defs><linearGradient id="g" x1="0" y1="0" x2="32" y2="32"><stop stopColor="#f2c45e"/><stop offset="1" stopColor="#9d7bff"/></linearGradient></defs>
+          </svg>
+          <div>
+            <div className="wordmark">CRIPTO <b>MINE</b></div>
+            <div className="tag">scanner de gemas low-cap · score + ranking</div>
+          </div>
+        </div>
+        <div className="topright">
+          {chainVol && <div className="volpill">🔊 maior volume agora · {CHAIN_LABEL[chainVol.chain]||chainVol.chain.toUpperCase()} · {fmtUsd(chainVol.vol)}</div>}
+          <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
+            <button className="scanbtn" onClick={scan} disabled={loading}>{loading ? "minerando…" : "↻ escanear"}</button>
+            {stamp && <span className="stamp">escaneado {new Date(stamp).toLocaleTimeString()}</span>}
+          </div>
+        </div>
+      </div>
+
+      <div className="tabs">
+        <button className={"tab"+(tab==="radar"?" on":"")} onClick={()=>setTab("radar")}>Radar <span className="cnt">{filtered.length}</span></button>
+        <button className={"tab"+(tab==="watch"?" on":"")} onClick={()=>setTab("watch")}>Watchlist <span className="cnt">{Object.keys(watch).length}</span></button>
+      </div>
+
+      <div className="panel" style={{padding:"11px 13px",marginBottom:12,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+        <span style={{fontSize:11,textTransform:"uppercase",letterSpacing:".6px",color:"var(--muted)",whiteSpace:"nowrap"}}>Inspecionar contrato</span>
+        <input className="inp mono" style={{flex:"1 1 220px",width:"auto"}} value={manual}
+          onChange={e=>{ setManual(e.target.value); if(err==="notfound") setErr(null); }}
+          onKeyDown={e=>{ if(e.key==="Enter") scoreOne(); }}
+          placeholder="cole a CA — pontua mesmo fora dos filtros" />
+        <button className="scanbtn" onClick={scoreOne} disabled={loading}>inspecionar</button>
+        {err==="notfound" && <span style={{fontSize:11.5,color:"var(--danger)"}}>contrato não encontrado no DexScreener</span>}
+      </div>
+
+      {inspected && (
+        <div style={{marginBottom:14}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+            <span style={{fontSize:11,textTransform:"uppercase",letterSpacing:".6px",color:"var(--muted)"}}>Inspeção · ignora seus filtros</span>
+            <button className="ghost" onClick={()=>setInspectedRaw(null)}>limpar inspeção</button>
+          </div>
+          {inspectFails.length===0
+            ? <div style={{border:"1px solid rgba(79,203,139,.35)",background:"rgba(79,203,139,.07)",color:"var(--ok)",borderRadius:9,padding:"7px 11px",marginBottom:8,fontSize:12.5}}>✓ Passaria nos seus filtros — entraria no Radar normalmente.</div>
+            : <div style={{border:"1px solid rgba(229,97,79,.35)",background:"rgba(229,97,79,.06)",color:"var(--danger)",borderRadius:9,padding:"7px 11px",marginBottom:8,fontSize:12.5}}>⚠ Fora da faixa de gema — não entraria no Radar: {inspectFails.join(" · ")}</div>}
+          {scoredCard(inspected, null)}
+        </div>
+      )}
+
+      {tab==="radar" && (
+        <div className="panel controls">
+          <div className="crow">
+            <div className="field"><label>MCap mín</label><input className="inp mono" type="number" value={mcapMin} onChange={e=>setMcapMin(+e.target.value||0)} /></div>
+            <div className="field"><label>MCap máx</label><input className="inp mono" type="number" value={mcapMax} onChange={e=>setMcapMax(+e.target.value||0)} /></div>
+            <div className="field"><label>Liquidez mín</label><input className="inp mono" type="number" value={liqMin} onChange={e=>setLiqMin(+e.target.value||0)} /></div>
+            <div className="field"><label>Rede</label>
+              <select className="inp" value={chain} onChange={e=>setChain(e.target.value)}>
+                <option value="all">Todas</option>
+                {CHAINS.map(c=><option key={c} value={c}>{CHAIN_LABEL[c]||c}</option>)}
+              </select></div>
+            <div className="field"><label>Idade máx (dias)</label><input className="inp mono" type="number" value={maxAgeD} onChange={e=>setMaxAgeD(+e.target.value||0)} placeholder="0=∞" /></div>
+            <div className="field"><label>Buscar</label><input className="inp search mono" value={q} onChange={e=>setQ(e.target.value)} placeholder="símbolo…" /></div>
+            {chainVol && <button className="ghost" onClick={()=>setChain(chainVol.chain)}>focar {CHAIN_LABEL[chainVol.chain]||chainVol.chain}</button>}
+            <div className="field"><label>Ordenar</label>
+              <select className="inp" value={sortBy} onChange={e=>setSortBy(e.target.value)}>
+                <option value="score">Gem Score</option>
+                <option value="newest">Mais novo</option>
+                <option value="accel">Aceleração vol</option>
+                <option value="mom6">Momentum 6h</option>
+                <option value="vol">Volume 24h</option>
+                <option value="mcap_asc">MCap menor</option>
+                <option value="mcap_desc">MCap maior</option>
+              </select></div>
+            <button className="ghost" onClick={exportCSV} disabled={filtered.length===0}>exportar CSV</button>
+          </div>
+          <div className="tunehead">
+            <span>Gem Score · pesos</span>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              <button className="ghost" style={sameW(w,PRESETS.consolidation)?{borderColor:"var(--gold)",color:"var(--text)"}:undefined} onClick={()=>persistW(PRESETS.consolidation)}>Consolidação</button>
+              <button className="ghost" style={sameW(w,PRESETS.default)?{borderColor:"var(--gold)",color:"var(--text)"}:undefined} onClick={()=>persistW(PRESETS.default)}>Padrão</button>
+              <button className="ghost" onClick={()=>setTune(t=>!t)}>{tune?"ocultar":"ajustar pesos"}</button>
+            </div>
+          </div>
+          {tune && (
+            <div className="weights">
+              {[["hype","Hype / boost"],["momentum","Momentum"],["liq","Liquidez p/ saída"],["volume","Volume / mcap"],["buys","Pressão de compra"],["age","Idade ideal"]].map(([k,lbl])=>(
+                <div className="wt" key={k}>
+                  <label>{lbl} <b>{w[k]}</b></label>
+                  <input type="range" min="0" max="40" value={w[k]} onChange={e=>persistW({...w,[k]:+e.target.value})}/>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab==="radar" && narratives.length>0 && (
+        <div className="narr">
+          <div className="narrhead">
+            <span>🔥 Narrativas em alta — no seu radar agora</span>
+            {catFilter && <button className="ghost" onClick={()=>setCatFilter("")}>limpar filtro</button>}
+          </div>
+          <div className="narrgrid">
+            {narratives.map((nv, idx) => (
+              <div key={nv.key} className={"narrcard"+(catFilter===nv.key?" on":"")} style={{borderColor:nv.color+"55"}}
+                   onClick={()=>setCatFilter(catFilter===nv.key?"":nv.key)} title="filtrar o radar por esta narrativa">
+                <div className="narrtop"><span className="narrrank">#{idx+1}</span><span className="narrlabel" style={{color:nv.color}}>{nv.label}</span></div>
+                <div className="narrbar"><div style={{width:Math.round((nv.heat/(narratives[0].heat||1))*100)+"%",background:nv.color}}/></div>
+                <div className="narrstats">{nv.n} tokens · score {Math.round(nv.scoreSum/nv.n)} · {nv.ign>0 ? nv.ign+" ⚡ ignição" : "mom "+(nv.momSum/nv.n).toFixed(0)+"%"}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {err==="network" && (
+        <div className="errbox">
+          <b>Não consegui puxar os dados ao vivo.</b>
+          <div style={{fontSize:13,marginTop:6,color:"var(--muted)"}}>A API do DexScreener pode estar fora do ar ou bloqueada nesse navegador. Tente escanear de novo, ou cole um endereço de contrato pra pontuar um token específico.</div>
+          <div className="manual">
+            <input value={manual} onChange={e=>setManual(e.target.value)} placeholder="0x... ou endereço do token"/>
+            <button className="scanbtn" onClick={scoreOne}>pontuar token</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="state"><div className="spin"/><div className="big">Minerando o mercado…</div>
+          <div className="sub">Puxando tokens recém-perfilados e em alta, filtrando pela sua faixa e calculando o Gem Score.</div></div>
+      ) : rows.length === 0 ? (
+        <div className="state">
+          <div className="big">{tab==="watch" ? "Watchlist vazia" : "Nenhuma gema nesse filtro"}</div>
+          <div className="sub">{tab==="watch" ? "Salve tokens do Radar pra acompanhar aqui." : "Afrouxe os filtros (mcap, liquidez, idade) ou escaneie de novo — o universo de descoberta gira o tempo todo."}</div>
+          {tab==="radar" && <div className="manual">
+            <input value={manual} onChange={e=>setManual(e.target.value)} placeholder="cole um contrato pra pontuar…"/>
+            <button className="ghost" onClick={scoreOne}>pontuar token</button>
+          </div>}
+        </div>
+      ) : (
+        <div className="list">
+          {rows.map((t, i) => {
+            if (t._stale) {
+              return (
+                <div className="card" key={t.key}>
+                  <div className="rank">{i+1}</div>
+                  <div className="mid"><div className="name"><span className="sym">{t.sym}</span>
+                    <span className="chip chain">{CHAIN_LABEL[t.chain]||t.chain}</span>
+                    <span className="chip">salvo · re-escaneie p/ atualizar</span></div></div>
+                  <div className="right">
+                    <a className="act" href={dexLink(t)} target="_blank" rel="noreferrer">DexScreener</a>
+                    <button className="act save saved" onClick={()=>toggleWatch(t)}>remover</button>
+                  </div>
+                </div>
+              );
+            }
+            return scoredCard(t, i);
+          })}
+        </div>
+      )}
+
+      <div className="foot">
+        Gem Score rankeia o quanto cada token se encaixa no perfil de gema cedo (liquidez p/ saída, momentum, hype, idade, pressão de compra) — não prevê 50x/100x e não substitui sua checagem de segurança no GMGN. Boost = atenção paga, não orgânica. Dados: DexScreener (público). Decisão e capital são seus.
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
