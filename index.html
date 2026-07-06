@@ -84,6 +84,8 @@
     padding:2px 6px; border-radius:5px; border:1px solid var(--line); color:var(--muted); }
   .chip.chain { color:var(--teal); border-color:rgba(52,198,184,.3); background:rgba(52,198,184,.06); }
   .chip.boost { color:var(--gold); border-color:rgba(232,179,62,.35); background:rgba(232,179,62,.08); }
+  .chip.warn { color:var(--danger); border-color:rgba(229,97,79,.4); background:rgba(229,97,79,.07); }
+  .chip.hist { color:var(--ok); border-color:rgba(79,203,139,.35); background:rgba(79,203,139,.06); }
   .chip.cat { cursor:pointer; background:transparent; }
   .chip.cat:hover { filter:brightness(1.25); }
   .narr { margin-bottom:14px; }
@@ -151,6 +153,47 @@ const store = {
   get(k){ try { const v = localStorage.getItem(k); return v ? { value:v } : null; } catch { return null; } },
   set(k,v){ try { localStorage.setItem(k, v); } catch {} }
 };
+
+// ---- histórico local de scans (localStorage) — memoriza snapshots por token entre sessões ----
+const HIST_KEY = "cm_hist";
+function loadHist(){ try { return JSON.parse(localStorage.getItem(HIST_KEY)) || {}; } catch { return {}; } }
+function recordHist(toks) {
+  const h = loadHist(); const now = Date.now();
+  toks.forEach(t => {
+    const e = h[t.key] || { snaps: [] };
+    const last = e.snaps[e.snaps.length-1];
+    // no máximo 1 snapshot a cada 10 min, até 60 por token
+    if (!last || now - last.t > 10*60*1000) {
+      e.snaps.push({ t: now, p: t.price||0, mc: t.mcap||0, lq: t.liq||0, v: t.vol24||0, b: t.buys||0 });
+      if (e.snaps.length > 60) e.snaps = e.snaps.slice(-60);
+    }
+    h[t.key] = e;
+  });
+  // poda tokens não vistos há 7 dias pra não estourar o localStorage
+  for (const k of Object.keys(h)) {
+    const s = h[k].snaps;
+    if (!s.length || now - s[s.length-1].t > 7*864e5) delete h[k];
+  }
+  try { localStorage.setItem(HIST_KEY, JSON.stringify(h)); } catch {}
+  return h;
+}
+// sinais derivados do histórico: acumulação (flat + liq subindo por 24h+) e ignição (volume saltando)
+function histSignals(key, hist) {
+  const e = hist && hist[key]; if (!e || e.snaps.length < 2) return null;
+  const s = e.snaps, first = s[0], last = s[s.length-1], prev = s[s.length-2];
+  const spanH = (last.t - first.t) / 36e5;
+  let maxMove = 0;
+  for (let i = 1; i < s.length; i++) {
+    if (s[i-1].p > 0) maxMove = Math.max(maxMove, Math.abs(s[i].p - s[i-1].p) / s[i-1].p);
+  }
+  const liqTrend = first.lq > 0 ? last.lq / first.lq : 1;
+  const volJump = prev.v > 0 ? last.v / prev.v : 0;
+  return {
+    n: s.length, spanH, liqTrend, volJump,
+    accumulating: maxMove < 0.15 && liqTrend >= 1.1 && spanH >= 24,
+    igniting: volJump >= 2 && spanH >= 12
+  };
+}
 
 const CHAINS = ["solana","ethereum","bsc","base","arbitrum","polygon","tron","sui","avalanche","hyperliquid"];
 const CHAIN_LABEL = { bsc:"BSC", ethereum:"ETH", solana:"SOL", base:"BASE", arbitrum:"ARB", polygon:"POLY", tron:"TRON", sui:"SUI", avalanche:"AVAX", hyperliquid:"HYPE" };
@@ -233,7 +276,10 @@ function subScores(t) {
   // flat: pica em 0% de variação e cai conforme o movimento aumenta — detecta lateralidade
   const flat6  = clamp01(1 - Math.abs(t.ch6  != null ? t.ch6  : 30) / 30);
   const flat24 = clamp01(1 - Math.abs(t.ch24 != null ? t.ch24 : 40) / 40);
-  const flat = 0.55 * flat6 + 0.45 * flat24;
+  // consolidação exige vida (volume girando + compradores) e maturidade — token morto ou recém-nascido não é consolidação
+  const life = clamp01((t.liq > 0 ? (t.vol24||0)/t.liq : 0) / 0.05) * clamp01((t.buys||0)/20);
+  const mature = h != null ? clamp01((h - 24) / 48) : 0.5; // <24h vale 0, 72h+ vale 1
+  const flat = (0.55 * flat6 + 0.45 * flat24) * life * mature;
   return { hype, momentum:mom, liq:liqHealth, volume:volTr, buys:buyP, age, flat };
 }
 function scoreToken(t, w) {
@@ -330,17 +376,19 @@ function App() {
   const [sortBy, setSortBy] = useState("score");
   const [catFilter, setCatFilter] = useState("");
   const [q, setQ] = useState("");
+  const [hist, setHist] = useState({});
 
   useEffect(() => {
     const a = store.get("cm_weights"); if (a) { try { setW(JSON.parse(a.value)); } catch {} }
     const b = store.get("cm_watch"); if (b) { try { setWatch(JSON.parse(b.value)); } catch {} }
+    setHist(loadHist());
   }, []);
   const persistW = useCallback((nw) => { setW(nw); store.set("cm_weights", JSON.stringify(nw)); }, []);
   const toggleWatch = useCallback((t) => {
     setWatch(prev => {
       const next = { ...prev };
       if (next[t.key]) delete next[t.key];
-      else next[t.key] = { sym:t.sym, chain:t.chain, addr:t.addr, url:t.url, savedAt:Date.now() };
+      else next[t.key] = { sym:t.sym, chain:t.chain, addr:t.addr, url:t.url, savedAt:Date.now(), priceAt:t.price||0, mcapAt:t.mcap||0 };
       store.set("cm_watch", JSON.stringify(next));
       return next;
     });
@@ -373,7 +421,7 @@ function App() {
       }
       // discovery via GeckoTerminal new/trending pools per network — surfaces real low-caps (fixes BSC; base token, not the WBNB quote)
       let toks = foldPairs(pairs, boostMap);
-      const gtPairs = chain === "all" ? [["bsc","bsc"],["base","base"]] : (GT_NET[chain] ? [[chain, GT_NET[chain]]] : []);
+      const gtPairs = chain === "all" ? [["bsc","bsc"],["base","base"],["solana","solana"],["ethereum","eth"]] : (GT_NET[chain] ? [[chain, GT_NET[chain]]] : []);
       for (const [cid, gtnet] of gtPairs) {
         try { toks = toks.concat(await foldGTNet(cid, gtnet)); } catch {}
       }
@@ -381,6 +429,7 @@ function App() {
       const merged = new Map();
       toks.forEach(t => { const ex = merged.get(t.key); if (!ex || (t.liq||0) > (ex.liq||0)) merged.set(t.key, t); });
       const finalToks = [...merged.values()];
+      setHist(recordHist(finalToks));
       setRaw(finalToks); setStamp(Date.now());
       if (finalToks.length === 0) setErr("nodata");
     } catch (e) {
@@ -498,6 +547,20 @@ function App() {
               {t.boost>0 && <span className="chip boost">🔥 boost {Math.round(t.boost)}</span>}
               {volAccel(t)>=3 && <span className="chip boost">⚡ ignição {volAccel(t).toFixed(1)}×</span>}
               {fdvMult(t)>=2.5 && <span className="chip warn">⚠ FDV {fdvMult(t).toFixed(1)}×</span>}
+              {t.mcap>0 && t.liq>0 && (t.liq/t.mcap)<0.02 && <span className="chip warn">⚠ liq/mc &lt;2%</span>}
+              {t.buys>=30 && t.sells<=t.buys*0.05 && <span className="chip warn">⚠ sells ≈0 · checar honeypot</span>}
+              {(() => {
+                const hs = histSignals(t.key, hist); if (!hs) return null;
+                return (<React.Fragment>
+                  {hs.accumulating && <span className="chip hist">📈 acumulando {Math.max(1,Math.round(hs.spanH/24))}d</span>}
+                  {hs.igniting && <span className="chip boost">🚀 despertando vol {hs.volJump.toFixed(1)}×</span>}
+                  {hs.n>=3 && <span className="chip" title={"visto em "+hs.n+" scans ao longo de "+hs.spanH.toFixed(0)+"h"}>👁 {hs.n}× scans</span>}
+                </React.Fragment>);
+              })()}
+              {watch[t.key] && watch[t.key].priceAt>0 && t.price>0 && (() => {
+                const d = (t.price/watch[t.key].priceAt - 1) * 100;
+                return <span className="chip" style={{color:d>=0?"var(--ok)":"var(--danger)",borderColor:d>=0?"rgba(79,203,139,.35)":"rgba(229,97,79,.4)"}}>💾 {fmtPct(d)} desde save</span>;
+              })()}
               {t.fullname && <span className="fullname">{t.fullname}</span>}
             </div>
             <div className="metrics">
