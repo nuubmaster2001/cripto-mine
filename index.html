@@ -195,6 +195,65 @@ function histSignals(key, hist) {
   };
 }
 
+// ---- checagem de contrato via GoPlus (grátis, mesma base usada pelo GMGN nos checks de segurança) ----
+const GOPLUS_CHAIN = { ethereum:"1", bsc:"56", polygon:"137", base:"8453", arbitrum:"42161", avalanche:"43114", solana:"solana" };
+function secFlags(d) {
+  const num = (x) => { const n = parseFloat(x); return isNaN(n) ? 0 : n; };
+  const lpLocked = (d.lp_holders||[]).reduce((s,h) => {
+    const a = (h.address||"").toLowerCase();
+    const burned = a === "0x000000000000000000000000000000000000dead" || a === "0x0000000000000000000000000000000000000000";
+    return s + ((h.is_locked === 1 || burned) ? num(h.percent)*100 : 0);
+  }, 0);
+  return {
+    honeypot: d.is_honeypot === "1" || d.cannot_sell_all === "1",
+    creatorHp: d.honeypot_with_same_creator === "1",
+    pausable: d.transfer_pausable === "1",
+    blacklist: d.is_blacklisted === "1",
+    mintable: d.is_mintable === "1",
+    openSource: d.is_open_source === "1",
+    buyTax: num(d.buy_tax)*100, sellTax: num(d.sell_tax)*100,
+    renounced: !d.owner_address || d.owner_address === "0x0000000000000000000000000000000000000000",
+    lpLocked, t: Date.now()
+  };
+}
+// Solana: riscos são autoridades do mint — freeze (congela a conta e impede venda), mint, saldo mutável, não-transferível
+function secFlagsSol(d) {
+  const st = (o) => !!o && o.status === "1";
+  const num = (x) => { const n = parseFloat(x); return isNaN(n) ? 0 : n; };
+  const lpLocked = (d.lp_holders||[]).reduce((s,h) => {
+    const tag = (h.tag||"").toLowerCase();
+    return s + ((h.is_locked === 1 || tag.indexOf("burn") >= 0) ? num(h.percent)*100 : 0);
+  }, 0);
+  const clean = !st(d.mintable) && !st(d.freezable) && !st(d.closable) && !st(d.balance_mutable_authority) && d.non_transferable !== "1";
+  return {
+    honeypot: d.non_transferable === "1",
+    freezable: st(d.freezable),
+    balanceMut: st(d.balance_mutable_authority) || st(d.closable),
+    mintable: st(d.mintable),
+    creatorHp: false, pausable: false, blacklist: false,
+    openSource: true, buyTax: 0, sellTax: 0,
+    renounced: clean || d.trusted_token === 1,
+    lpLocked, t: Date.now()
+  };
+}
+async function fetchSecurity(chain, addrs) {
+  const cid = GOPLUS_CHAIN[chain]; if (!cid || !addrs.length) return {};
+  const sol = chain === "solana";
+  const base = sol
+    ? "https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses="
+    : "https://api.gopluslabs.io/api/v1/token_security/" + cid + "?contract_addresses=";
+  const out = {};
+  // o endpoint Solana só processa 1 endereço por chamada; EVM aceita lote
+  for (const g of chunk(addrs, sol ? 1 : 20)) {
+    try {
+      const r = await getJSON(base + g.join(","));
+      const res = (r && r.result) || {};
+      for (const a of Object.keys(res)) out[chain + ":" + a.toLowerCase()] = sol ? secFlagsSol(res[a]) : secFlags(res[a]);
+    } catch {}
+  }
+  return out;
+}
+
 const CHAINS = ["solana","ethereum","bsc","base","arbitrum","polygon","tron","sui","avalanche","hyperliquid"];
 const CHAIN_LABEL = { bsc:"BSC", ethereum:"ETH", solana:"SOL", base:"BASE", arbitrum:"ARB", polygon:"POLY", tron:"TRON", sui:"SUI", avalanche:"AVAX", hyperliquid:"HYPE" };
 const GMGN_SLUG = { solana:"sol", ethereum:"eth", bsc:"bsc", base:"base", tron:"tron", blast:"blast", arbitrum:"arb", avalanche:"avax", polygon:"polygon" };
@@ -377,11 +436,35 @@ function App() {
   const [catFilter, setCatFilter] = useState("");
   const [q, setQ] = useState("");
   const [hist, setHist] = useState({});
+  const [sec, setSec] = useState({});
 
   useEffect(() => {
     const a = store.get("cm_weights"); if (a) { try { setW(JSON.parse(a.value)); } catch {} }
     const b = store.get("cm_watch"); if (b) { try { setWatch(JSON.parse(b.value)); } catch {} }
     setHist(loadHist());
+    const c = store.get("cm_sec"); if (c) { try { setSec(JSON.parse(c.value)); } catch {} }
+  }, []);
+
+  // checa contratos no GoPlus em background (cache 12h por token, poda após 7d)
+  const checkSecurity = useCallback(async (toks) => {
+    const now = Date.now();
+    let cache = {}; try { cache = JSON.parse(localStorage.getItem("cm_sec")) || {}; } catch {}
+    const byChain = {};
+    toks.forEach(t => {
+      if (!GOPLUS_CHAIN[t.chain]) return;
+      const c = cache[t.key];
+      if (c && now - c.t < 12*36e5) return;
+      (byChain[t.chain] = byChain[t.chain] || []).push(t.addr);
+    });
+    let merged = { ...cache };
+    for (const ch of Object.keys(byChain)) {
+      // Solana é 1 chamada por token — limita a 30 por scan (rate limit); o cache de 12h cobre o resto nos próximos scans
+      const list = ch === "solana" ? byChain[ch].slice(0, 30) : byChain[ch];
+      try { merged = { ...merged, ...(await fetchSecurity(ch, list)) }; } catch {}
+    }
+    for (const k of Object.keys(merged)) { if (now - merged[k].t > 7*864e5) delete merged[k]; }
+    store.set("cm_sec", JSON.stringify(merged));
+    setSec(merged);
   }, []);
   const persistW = useCallback((nw) => { setW(nw); store.set("cm_weights", JSON.stringify(nw)); }, []);
   const toggleWatch = useCallback((t) => {
@@ -431,11 +514,12 @@ function App() {
       const finalToks = [...merged.values()];
       setHist(recordHist(finalToks));
       setRaw(finalToks); setStamp(Date.now());
+      checkSecurity(finalToks); // sem await — chips de contrato chegam em background
       if (finalToks.length === 0) setErr("nodata");
     } catch (e) {
       setErr("network");
     } finally { setLoading(false); }
-  }, [chain]);
+  }, [chain, checkSecurity]);
 
   useEffect(() => { scan(); }, [scan]);
 
@@ -453,7 +537,7 @@ function App() {
       (bLatest||[]).forEach(addB); (bTop||[]).forEach(addB);
       const toks = foldPairs((data && data.pairs) || [], boostMap);
       if (toks.length === 0) setErr("notfound");
-      else { toks.sort((a,b)=>(b.liq||0)-(a.liq||0)); setInspectedRaw(toks[0]); }
+      else { toks.sort((a,b)=>(b.liq||0)-(a.liq||0)); setInspectedRaw(toks[0]); checkSecurity([toks[0]]); }
     } catch { setErr("network"); }
     finally { setLoading(false); }
   };
@@ -549,6 +633,24 @@ function App() {
               {fdvMult(t)>=2.5 && <span className="chip warn">⚠ FDV {fdvMult(t).toFixed(1)}×</span>}
               {t.mcap>0 && t.liq>0 && (t.liq/t.mcap)<0.02 && <span className="chip warn">⚠ liq/mc &lt;2%</span>}
               {t.buys>=30 && t.sells<=t.buys*0.05 && <span className="chip warn">⚠ sells ≈0 · checar honeypot</span>}
+              {(() => {
+                const sc = sec[t.key]; if (!sc) return null;
+                const flags = [];
+                if (sc.honeypot) flags.push(<span key="hp" className="chip warn">☠ honeypot · GoPlus</span>);
+                else {
+                  if (sc.freezable) flags.push(<span key="fz" className="chip warn">⚠ freeze authority</span>);
+                  if (sc.balanceMut) flags.push(<span key="bm" className="chip warn">⚠ saldo mutável</span>);
+                  if (sc.creatorHp) flags.push(<span key="chp" className="chip warn">⚠ criador já fez honeypot</span>);
+                  if (sc.sellTax >= 10) flags.push(<span key="tx" className="chip warn">⚠ taxa venda {sc.sellTax.toFixed(0)}%</span>);
+                  if (sc.mintable) flags.push(<span key="mt" className="chip warn">⚠ mintável</span>);
+                  if (sc.pausable) flags.push(<span key="ps" className="chip warn">⚠ pausável</span>);
+                  if (sc.blacklist) flags.push(<span key="bl" className="chip warn">⚠ blacklist</span>);
+                  if (!sc.openSource) flags.push(<span key="os" className="chip warn">⚠ código fechado</span>);
+                }
+                if (!flags.length && sc.renounced)
+                  flags.push(<span key="ok" className="chip hist" title={"GoPlus: open source · dono renunciado · LP "+sc.lpLocked.toFixed(0)+"% queimada/travada · taxa "+sc.buyTax.toFixed(1)+"%/"+sc.sellTax.toFixed(1)+"%"}>🛡 GoPlus ok{sc.lpLocked>=50 ? " · LP "+Math.min(100,sc.lpLocked).toFixed(0)+"%" : ""}</span>);
+                return flags;
+              })()}
               {(() => {
                 const hs = histSignals(t.key, hist); if (!hs) return null;
                 return (<React.Fragment>
