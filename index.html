@@ -193,6 +193,159 @@ const cloudSaveWatch = (key, e) => { sbReq("watchlist?on_conflict=key", { method
   body: JSON.stringify([{ key, sym:e.sym, chain:e.chain, addr:e.addr, url:e.url, saved_at:e.savedAt, price_at:e.priceAt||0, mcap_at:e.mcapAt||0 }]) }).catch(()=>{}); };
 const cloudDelWatch = (key) => { sbReq("watchlist?key=eq." + encodeURIComponent(key), { method:"DELETE" }).catch(()=>{}); };
 
+// ---- Smart Money: compradores iniciais via RPC público (sem chave) + cruzamento com trades do GeckoTerminal ----
+const RPC = {
+  ethereum:"https://ethereum-rpc.publicnode.com", bsc:"https://bsc-rpc.publicnode.com",
+  base:"https://base-rpc.publicnode.com", arbitrum:"https://arbitrum-one-rpc.publicnode.com",
+  polygon:"https://polygon-bor-rpc.publicnode.com", avalanche:"https://avalanche-c-chain-rpc.publicnode.com"
+};
+// getLogs histórico é bloqueado nos RPCs comuns; a Blast API pública aceita (janelas de até 10 blocos)
+const RPC_LOGS = {
+  ethereum:"https://eth-mainnet.public.blastapi.io", bsc:"https://bsc-mainnet.public.blastapi.io",
+  base:"https://base-mainnet.public.blastapi.io", arbitrum:"https://arbitrum-one.public.blastapi.io",
+  polygon:"https://polygon-mainnet.public.blastapi.io", avalanche:"https://ava-mainnet.public.blastapi.io/ext/bc/C/rpc"
+};
+const CHAIN_SEC = { bsc:3, ethereum:12, base:2, arbitrum:0.3, polygon:2.1, avalanche:2 }; // seg/bloco aproximado p/ exibição
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const DEAD_ADDRS = new Set(["0x0000000000000000000000000000000000000000","0x000000000000000000000000000000000000dead"]);
+// routers/agregadores conhecidos — nunca são "carteiras"
+const ROUTERS = new Set([
+  "0x10ed43c718714eb63d5aa57b78b54704e256024e","0x13f4ea83d0bd40e75c8222255bc855a974568dd4",
+  "0x7a250d5630b4cf539739df2c5dacb4c659f2488d","0xe592427a0aece92de3edee1f18e0157c05861564",
+  "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45","0x1111111254eeb25477b68fb85ed929f73a960582",
+  "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad","0x66a9893cc07d91d95644aedd05d03f95e1dba8af",
+  "0x1a0a18ac4becddbd6389559687d1a73d8927e416","0x6352a56caadc4f1e25cd6c75970fa768a3304e64"
+]);
+let _rpcId = 1;
+async function rpcCall(url, method, params) {
+  const r = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ jsonrpc:"2.0", id:_rpcId++, method, params }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || "rpc error");
+  return j.result;
+}
+const hexBlock = (n) => "0x" + n.toString(16);
+// tenta Blast primeiro (mais tolerante), cai para publicnode se falhar
+async function rpcAny(chain, method, params) {
+  let err;
+  for (const u of [RPC_LOGS[chain], RPC[chain]]) {
+    try { return await rpcCall(u, method, params); } catch (e) { err = e; }
+  }
+  throw err || new Error("rpc indisponível");
+}
+// busca binária do bloco pelo timestamp (funciona em full node, sem archive)
+async function blockAtTime(chain, targetSec) {
+  let hi = parseInt(await rpcAny(chain, "eth_blockNumber", []), 16), lo = 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const b = await rpcAny(chain, "eth_getBlockByNumber", [hexBlock(mid), false]);
+    if (!b) { lo = mid + 1; continue; }
+    if (parseInt(b.timestamp, 16) < targetSec) lo = mid + 1; else hi = mid;
+    await new Promise(r => setTimeout(r, 80)); // não provocar ban por burst
+  }
+  return lo;
+}
+// extrai as primeiras carteiras que receberam o token a partir da criação do primeiro pool
+async function earlyBuyers(ca) {
+  const data = await getJSON(DS + "/latest/dex/tokens/" + ca);
+  const pairs = ((data && data.pairs) || []).filter(p => RPC[p.chainId]);
+  if (!pairs.length) throw new Error("token não encontrado em chain EVM suportada (ETH, BSC, Base, ARB, POLY, AVAX)");
+  const chain = pairs[0].chainId;
+  const chainPairs = pairs.filter(p => p.chainId === chain);
+  const createdMs = Math.min(...chainPairs.map(p => p.pairCreatedAt || Infinity));
+  if (!isFinite(createdMs)) throw new Error("DexScreener não informou a data de criação do pool");
+  const pairSet = new Set(chainPairs.map(p => (p.pairAddress||"").toLowerCase()));
+  const token = chainPairs[0].baseToken.address.toLowerCase();
+  const sym = chainPairs[0].baseToken.symbol;
+  const startBlock = await blockAtTime(chain, Math.floor(createdMs/1000) - 60);
+  const latest = parseInt(await rpcAny(chain, "eth_blockNumber", []), 16);
+  const secPerBlock = CHAIN_SEC[chain] || 3;
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  // Blast limita getLogs a 10 blocos por chamada; null = erro de rede (≠ janela vazia)
+  const getWin = async (from) => {
+    try {
+      return await rpcCall(RPC_LOGS[chain], "eth_getLogs", [{ fromBlock:hexBlock(from), toBlock:hexBlock(Math.min(from+9, latest)), address:token, topics:[TRANSFER_TOPIC] }]) || [];
+    } catch { await sleep(500); return null; }
+  };
+  // fase A: acha a região do primeiro transfer — a liquidez pode entrar horas/dias depois da criação do par
+  let probe = startBlock, stride = 10, prevEmpty = startBlock, hit = -1;
+  for (let i = 0; i < 90 && probe <= latest; i++) {
+    const w = await getWin(probe);
+    if (w && w.length) { hit = probe; break; }
+    if (w) prevEmpty = probe;
+    probe += stride; stride = Math.min(stride * 2, 50000);
+    await sleep(110);
+  }
+  if (hit < 0) throw new Error("não encontrei o início do trading deste token — a atividade pode ter começado muito depois da criação do pool");
+  // fase B: bisseção entre a última janela vazia e o hit (início de trading é denso — janela de 10 blocos não fica vazia)
+  let lo = prevEmpty, hi = hit;
+  for (let i = 0; i < 20 && hi - lo > 10; i++) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    const w = await getWin(mid);
+    if (w && w.length) hi = mid; else lo = mid + 10;
+    await sleep(110);
+  }
+  const firstBlock = hi;
+  // fase C: coleta janelas contíguas a partir do primeiro bloco ativo até juntar 60 carteiras
+  const seen = new Map();
+  let from = firstBlock;
+  for (let i = 0; i < 90 && seen.size < 60 && from <= latest; i++) {
+    const batch = (await getWin(from)) || [];
+    for (const lg of batch) {
+      if (!lg.topics || lg.topics.length < 3) continue;
+      const toA = "0x" + lg.topics[2].slice(26);
+      const fromA = "0x" + lg.topics[1].slice(26);
+      const ex = seen.get(toA);
+      if (ex) { ex.n++; continue; }
+      if (pairSet.has(toA) || toA === token || DEAD_ADDRS.has(toA) || ROUTERS.has(toA)) continue;
+      const blockOff = parseInt(lg.blockNumber, 16) - firstBlock;
+      seen.set(toA, {
+        addr: toA, rank: seen.size + 1, n: 1,
+        mins: Math.max(0, Math.round(blockOff * secPerBlock / 60)),
+        kind: pairSet.has(fromA) ? "compra" : (DEAD_ADDRS.has(fromA) ? "mint" : "transfer")
+      });
+      if (seen.size >= 60) break;
+    }
+    from += 10;
+    await sleep(110);
+  }
+  if (!seen.size) throw new Error("nenhuma transferência encontrada na janela inicial — tente novamente");
+  return { chain, sym, token, wallets: [...seen.values()] };
+}
+// cruza trades recentes (GeckoTerminal) dos tokens do radar com as carteiras rastreadas
+async function crossMatch(tokens, wallets) {
+  const hits = {}, feed = [];
+  for (const t of tokens) {
+    const gtnet = GT_NET[t.chain]; if (!gtnet) continue;
+    const pool = (t.url || "").split("?")[0].split("/").filter(Boolean).pop(); if (!pool) continue;
+    try {
+      const j = await getJSON("https://api.geckoterminal.com/api/v2/networks/" + gtnet + "/pools/" + pool + "/trades");
+      (j.data || []).forEach(tr => {
+        const a = tr.attributes || {};
+        const buyer = (a.tx_from_address || "").toLowerCase();
+        if (a.kind === "buy" && wallets[t.chain + ":" + buyer]) {
+          (hits[t.key] = hits[t.key] || new Set()).add(buyer);
+          feed.push({ wallet: buyer, sym: t.sym, key: t.key, chain: t.chain, t: a.block_timestamp ? Date.parse(a.block_timestamp) : null });
+        }
+      });
+    } catch {}
+  }
+  feed.sort((x,y) => (y.t||0) - (x.t||0));
+  return { hits: Object.fromEntries(Object.entries(hits).map(([k,v]) => [k, [...v]])), feed };
+}
+async function cloudLoadSmart() {
+  const rows = await sbReq("smart_wallets?select=*");
+  const w = {};
+  (rows||[]).forEach(r => {
+    const k = r.chain + ":" + r.addr;
+    if (!w[k]) w[k] = { addr:r.addr, chain:r.chain, sources:[] };
+    if (!w[k].sources.some(s => s.token === r.source_token)) w[k].sources.push({ token:r.source_token, sym:r.source_sym||"?" });
+  });
+  return w;
+}
+const cloudSaveSmart = (r) => { sbReq("smart_wallets?on_conflict=addr,chain,source_token", { method:"POST", headers:{ Prefer:"resolution=merge-duplicates" }, body: JSON.stringify([r]) }).catch(()=>{}); };
+const cloudDelSmart = (addr, chain) => { sbReq("smart_wallets?addr=eq." + addr + "&chain=eq." + chain, { method:"DELETE" }).catch(()=>{}); };
+
 // ---- histórico local de scans (localStorage) — memoriza snapshots por token entre sessões ----
 const HIST_KEY = "cm_hist";
 function loadHist(){ try { return JSON.parse(localStorage.getItem(HIST_KEY)) || {}; } catch { return {}; } }
@@ -481,6 +634,14 @@ function App() {
   const [hist, setHist] = useState({});
   const [sec, setSec] = useState({});
   const [cloud, setCloud] = useState(false); // sincronização com Supabase ativa
+  const [smWallets, setSmWallets] = useState({});   // carteiras rastreadas: chain:addr -> {addr, chain, sources[]}
+  const [smHits, setSmHits] = useState({});         // token key -> [carteiras que compraram recentemente]
+  const [smFeed, setSmFeed] = useState([]);
+  const [smCA, setSmCA] = useState("");
+  const [smExtract, setSmExtract] = useState(null);
+  const [smErr, setSmErr] = useState(null);
+  const [smBusy, setSmBusy] = useState(false);
+  const [smStamp, setSmStamp] = useState(null);
 
   useEffect(() => {
     const a = store.get("cm_weights"); if (a) { try { setW(JSON.parse(a.value)); } catch {} }
@@ -494,7 +655,49 @@ function App() {
       store.set("cm_watch", JSON.stringify(merged));
       return merged;
     })).catch(()=>{});
+    const d = store.get("cm_smart"); if (d) { try { setSmWallets(JSON.parse(d.value)); } catch {} }
+    cloudLoadSmart().then(sw => setSmWallets(prev => {
+      const merged = { ...prev, ...sw };
+      store.set("cm_smart", JSON.stringify(merged));
+      return merged;
+    })).catch(()=>{});
   }, []);
+
+  const trackWallet = useCallback((bw, ext) => {
+    setSmWallets(prev => {
+      const k = ext.chain + ":" + bw.addr;
+      const cur = prev[k] || { addr:bw.addr, chain:ext.chain, sources:[] };
+      const sources = cur.sources.some(s => s.token === ext.token) ? cur.sources : [...cur.sources, { token:ext.token, sym:ext.sym }];
+      const next = { ...prev, [k]: { ...cur, sources } };
+      store.set("cm_smart", JSON.stringify(next));
+      return next;
+    });
+    cloudSaveSmart({ addr:bw.addr, chain:ext.chain, source_token:ext.token, source_sym:ext.sym, added_at:Date.now() });
+  }, []);
+  const untrackWallet = useCallback((k) => {
+    setSmWallets(prev => {
+      const wl = prev[k]; if (!wl) return prev;
+      cloudDelSmart(wl.addr, wl.chain);
+      const next = { ...prev }; delete next[k];
+      store.set("cm_smart", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+  const runExtract = async () => {
+    const v = smCA.trim(); if (!v || smBusy) return;
+    setSmBusy(true); setSmErr(null); setSmExtract(null);
+    try { setSmExtract(await earlyBuyers(v)); }
+    catch (e) { setSmErr(e.message || "falha na extração"); }
+    finally { setSmBusy(false); }
+  };
+  const runCross = async () => {
+    if (smBusy) return;
+    setSmBusy(true);
+    try {
+      const r = await crossMatch(preCat.slice(0, 15), smWallets);
+      setSmHits(r.hits); setSmFeed(r.feed); setSmStamp(Date.now());
+    } finally { setSmBusy(false); }
+  };
 
   // checa contratos no GoPlus em background (cache 12h por token, poda após 7d)
   const checkSecurity = useCallback(async (toks) => {
@@ -687,6 +890,7 @@ function App() {
               {fdvMult(t)>=2.5 && <span className="chip warn">⚠ FDV {fdvMult(t).toFixed(1)}×</span>}
               {t.mcap>0 && t.liq>0 && (t.liq/t.mcap)<0.02 && <span className="chip warn">⚠ liq/mc &lt;2%</span>}
               {t.buys>=30 && t.sells<=t.buys*0.05 && <span className="chip warn">⚠ sells ≈0 · checar honeypot</span>}
+              {smHits[t.key] && smHits[t.key].length>0 && <span className="chip" style={{color:"var(--violet)",borderColor:"rgba(157,123,255,.45)",background:"rgba(157,123,255,.08)"}} title={"carteiras rastreadas que compraram: "+smHits[t.key].join(", ")}>🧠 {smHits[t.key].length} smart wallet{smHits[t.key].length>1?"s":""}</span>}
               {(() => {
                 const sc = sec[t.key]; if (!sc) return null;
                 const flags = [];
@@ -786,6 +990,7 @@ function App() {
       <div className="tabs">
         <button className={"tab"+(tab==="radar"?" on":"")} onClick={()=>setTab("radar")}>Radar <span className="cnt">{filtered.length}</span></button>
         <button className={"tab"+(tab==="watch"?" on":"")} onClick={()=>setTab("watch")}>Watchlist <span className="cnt">{Object.keys(watch).length}</span></button>
+        <button className={"tab"+(tab==="smart"?" on":"")} onClick={()=>setTab("smart")}>🧠 Smart <span className="cnt">{Object.keys(smWallets).length}</span></button>
       </div>
 
       <div className="panel" style={{padding:"11px 13px",marginBottom:12,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
@@ -877,7 +1082,79 @@ function App() {
         </div>
       )}
 
-      {err==="network" && (
+      {tab==="smart" && (
+        <div>
+          <div className="panel" style={{padding:"13px 14px",marginBottom:12}}>
+            <div style={{fontSize:11,textTransform:"uppercase",letterSpacing:".6px",color:"var(--muted)",marginBottom:8}}>Extrair compradores iniciais de um token que explodiu</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <input className="inp mono" style={{flex:"1 1 260px",width:"auto"}} value={smCA} onChange={e=>setSmCA(e.target.value)}
+                onKeyDown={e=>{ if(e.key==="Enter") runExtract(); }} placeholder="CA do token (EVM: ETH, BSC, Base, ARB…)"/>
+              <button className="scanbtn" onClick={runExtract} disabled={smBusy}>{smBusy?"extraindo…":"extrair"}</button>
+            </div>
+            <div style={{fontSize:11,color:"var(--faint)",marginTop:6}}>Lê as primeiras transferências direto da blockchain (RPC público) a partir da criação do pool. Cole a CA do COAI, LAB ou de qualquer 50x/100x seu.</div>
+            {smErr && <div style={{color:"var(--danger)",fontSize:12,marginTop:8}}>⚠ {smErr}</div>}
+            {smExtract && (
+              <div style={{marginTop:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                  <span style={{fontSize:12.5}}>{smExtract.wallets.length} carteiras na janela inicial de <b>{smExtract.sym}</b> · {CHAIN_LABEL[smExtract.chain]||smExtract.chain}</span>
+                  <button className="ghost" onClick={()=>smExtract.wallets.filter(bw=>bw.kind==="compra").slice(0,20).forEach(bw=>trackWallet(bw, smExtract))}>rastrear top 20 compras</button>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:4,marginTop:9,maxHeight:340,overflow:"auto"}}>
+                  {smExtract.wallets.map(bw => {
+                    const k = smExtract.chain+":"+bw.addr, on = !!smWallets[k];
+                    return (
+                      <div key={bw.addr} style={{display:"flex",gap:9,alignItems:"center",fontFamily:"'JetBrains Mono'",fontSize:11.5,borderBottom:"1px dashed var(--line)",padding:"4px 0"}}>
+                        <span style={{color:"var(--faint)",width:28}}>#{bw.rank}</span>
+                        <a href={"https://gmgn.ai/"+(GMGN_SLUG[smExtract.chain]||smExtract.chain)+"/address/"+bw.addr} target="_blank" rel="noreferrer"
+                           style={{color:"var(--violet)",textDecoration:"none",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis"}}>{bw.addr}</a>
+                        <span className="chip" style={bw.kind==="compra"?{color:"var(--ok)",borderColor:"rgba(79,203,139,.35)"}:bw.kind==="mint"?{color:"var(--gold)"}:undefined}>{bw.kind}</span>
+                        <span style={{color:"var(--muted)",whiteSpace:"nowrap"}}>~+{bw.mins}min</span>
+                        <button className={"act save"+(on?" saved":"")} style={{padding:"3px 8px"}} onClick={()=>on?untrackWallet(k):trackWallet(bw, smExtract)}>{on?"✓":"rastrear"}</button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{fontSize:10.5,color:"var(--faint)",marginTop:8}}>"mint" = recebeu do contrato (dev/alocação) · "compra" = veio do pool · "transfer" = veio de outra carteira. Confira o histórico no GMGN antes de rastrear — os primeiros minutos misturam snipers e bots.</div>
+              </div>
+            )}
+          </div>
+          <div className="panel" style={{padding:"13px 14px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:8}}>
+              <span style={{fontSize:11,textTransform:"uppercase",letterSpacing:".6px",color:"var(--muted)"}}>Carteiras rastreadas · {Object.keys(smWallets).length}</span>
+              <button className="scanbtn" onClick={runCross} disabled={smBusy || Object.keys(smWallets).length===0}>{smBusy?"cruzando…":"🧠 cruzar com o radar"}</button>
+            </div>
+            {Object.keys(smWallets).length===0 && (
+              <div style={{color:"var(--muted)",fontSize:12.5,lineHeight:1.5}}>Nenhuma carteira ainda. Extraia acima os compradores iniciais dos seus melhores trades (COAI, LAB…) e marque quais rastrear. Carteiras que aparecem em 2+ extrações ganham ⭐ — essas são as que interessam.</div>
+            )}
+            <div style={{display:"flex",flexDirection:"column",gap:4}}>
+              {Object.entries(smWallets).map(([k, wl]) => (
+                <div key={k} style={{display:"flex",gap:9,alignItems:"center",fontFamily:"'JetBrains Mono'",fontSize:11.5,borderBottom:"1px dashed var(--line)",padding:"4px 0",flexWrap:"wrap"}}>
+                  {wl.sources.length>=2 && <span title="entrou cedo em 2+ tokens que explodiram">⭐</span>}
+                  <a href={"https://gmgn.ai/"+(GMGN_SLUG[wl.chain]||wl.chain)+"/address/"+wl.addr} target="_blank" rel="noreferrer"
+                     style={{color:"var(--violet)",textDecoration:"none",flex:1,minWidth:180,overflow:"hidden",textOverflow:"ellipsis"}}>{wl.addr}</a>
+                  <span className="chip chain">{CHAIN_LABEL[wl.chain]||wl.chain}</span>
+                  <span style={{color:"var(--muted)"}}>{wl.sources.map(s=>s.sym).join(" · ")}</span>
+                  <button className="act" style={{padding:"3px 8px"}} onClick={()=>untrackWallet(k)}>remover</button>
+                </div>
+              ))}
+            </div>
+            {smStamp && (
+              <div style={{marginTop:12}}>
+                <div style={{fontSize:11,textTransform:"uppercase",letterSpacing:".6px",color:"var(--muted)",marginBottom:6}}>Compras de smart wallets nos trades recentes do radar · {new Date(smStamp).toLocaleTimeString()}</div>
+                {smFeed.length===0
+                  ? <div style={{color:"var(--muted)",fontSize:12}}>Nenhuma compra de carteira rastreada encontrada agora — rode de novo após o próximo scan.</div>
+                  : smFeed.map((f,i)=>(
+                    <div key={i} style={{fontSize:12,fontFamily:"'JetBrains Mono'",padding:"3px 0"}}>
+                      🧠 {f.wallet.slice(0,6)}…{f.wallet.slice(-4)} comprou <b>{f.sym}</b>{f.t ? " · " + new Date(f.t).toLocaleString() : ""}
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {err==="network" && tab!=="smart" && (
         <div className="errbox">
           <b>Não consegui puxar os dados ao vivo.</b>
           <div style={{fontSize:13,marginTop:6,color:"var(--muted)"}}>A API do DexScreener pode estar fora do ar ou bloqueada nesse navegador. Tente escanear de novo, ou cole um endereço de contrato pra pontuar um token específico.</div>
@@ -888,7 +1165,7 @@ function App() {
         </div>
       )}
 
-      {loading ? (
+      {tab==="smart" ? null : loading ? (
         <div className="state"><div className="spin"/><div className="big">Minerando o mercado…</div>
           <div className="sub">Puxando tokens recém-perfilados e em alta, filtrando pela sua faixa e calculando o Gem Score.</div></div>
       ) : rows.length === 0 ? (
