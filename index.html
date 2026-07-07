@@ -154,17 +154,59 @@ const store = {
   set(k,v){ try { localStorage.setItem(k, v); } catch {} }
 };
 
+// ---- Supabase (free tier) — histórico e watchlist sincronizados entre dispositivos; localStorage segue como fallback ----
+const SB_URL = "https://uiqancktoefthiiofama.supabase.co";
+const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVpcWFuY2t0b2VmdGhpaW9mYW1hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMzNTM0NzYsImV4cCI6MjA5ODkyOTQ3Nn0.VAYp4qQEf2Xjd-Z0Vl6n_UgW37seh3MNtlzomt5Bdg0";
+async function sbReq(path, opts) {
+  const r = await fetch(SB_URL + "/rest/v1/" + path, { ...(opts||{}),
+    headers: { apikey:SB_KEY, Authorization:"Bearer "+SB_KEY, "Content-Type":"application/json", ...((opts&&opts.headers)||{}) } });
+  if (!r.ok) throw new Error("sb " + r.status);
+  const txt = await r.text();
+  return txt ? JSON.parse(txt) : null;
+}
+const cloudPushScans = (rows) => { if (rows.length) sbReq("scans?on_conflict=key,t", { method:"POST", headers:{ Prefer:"resolution=ignore-duplicates" }, body: JSON.stringify(rows) }).catch(()=>{}); };
+const cloudPrune = () => { sbReq("scans?t=lt." + (Date.now() - 7*864e5), { method:"DELETE" }).catch(()=>{}); };
+async function cloudLoadHist() {
+  const rows = await sbReq("scans?select=key,t,p,mc,lq,v,b&t=gte." + (Date.now() - 7*864e5) + "&order=t.asc&limit=20000");
+  const h = {};
+  (rows||[]).forEach(r => { (h[r.key] = h[r.key] || { snaps: [] }).snaps.push({ t:+r.t, p:r.p, mc:r.mc, lq:r.lq, v:r.v, b:r.b }); });
+  for (const k of Object.keys(h)) { if (h[k].snaps.length > 60) h[k].snaps = h[k].snaps.slice(-60); }
+  return h;
+}
+function mergeHist(a, b) {
+  const out = { ...a };
+  for (const k of Object.keys(b)) {
+    if (!out[k]) { out[k] = b[k]; continue; }
+    const byT = new Map();
+    [...out[k].snaps, ...b[k].snaps].forEach(s => byT.set(s.t, s));
+    out[k] = { snaps: [...byT.values()].sort((x,y) => x.t - y.t).slice(-60) };
+  }
+  return out;
+}
+async function cloudLoadWatch() {
+  const rows = await sbReq("watchlist?select=*");
+  const w = {};
+  (rows||[]).forEach(r => { w[r.key] = { sym:r.sym, chain:r.chain, addr:r.addr, url:r.url, savedAt:+r.saved_at, priceAt:r.price_at||0, mcapAt:r.mcap_at||0 }; });
+  return w;
+}
+const cloudSaveWatch = (key, e) => { sbReq("watchlist?on_conflict=key", { method:"POST", headers:{ Prefer:"resolution=merge-duplicates" },
+  body: JSON.stringify([{ key, sym:e.sym, chain:e.chain, addr:e.addr, url:e.url, saved_at:e.savedAt, price_at:e.priceAt||0, mcap_at:e.mcapAt||0 }]) }).catch(()=>{}); };
+const cloudDelWatch = (key) => { sbReq("watchlist?key=eq." + encodeURIComponent(key), { method:"DELETE" }).catch(()=>{}); };
+
 // ---- histórico local de scans (localStorage) — memoriza snapshots por token entre sessões ----
 const HIST_KEY = "cm_hist";
 function loadHist(){ try { return JSON.parse(localStorage.getItem(HIST_KEY)) || {}; } catch { return {}; } }
 function recordHist(toks) {
   const h = loadHist(); const now = Date.now();
+  const added = [];
   toks.forEach(t => {
     const e = h[t.key] || { snaps: [] };
     const last = e.snaps[e.snaps.length-1];
     // no máximo 1 snapshot a cada 10 min, até 60 por token
     if (!last || now - last.t > 10*60*1000) {
-      e.snaps.push({ t: now, p: t.price||0, mc: t.mcap||0, lq: t.liq||0, v: t.vol24||0, b: t.buys||0 });
+      const snap = { t: now, p: t.price||0, mc: t.mcap||0, lq: t.liq||0, v: t.vol24||0, b: t.buys||0 };
+      e.snaps.push(snap);
+      added.push({ key: t.key, ...snap });
       if (e.snaps.length > 60) e.snaps = e.snaps.slice(-60);
     }
     h[t.key] = e;
@@ -175,6 +217,7 @@ function recordHist(toks) {
     if (!s.length || now - s[s.length-1].t > 7*864e5) delete h[k];
   }
   try { localStorage.setItem(HIST_KEY, JSON.stringify(h)); } catch {}
+  cloudPushScans(added); cloudPrune(); // espelha na nuvem em background
   return h;
 }
 // sinais derivados do histórico: acumulação (flat + liq subindo por 24h+) e ignição (volume saltando)
@@ -437,12 +480,20 @@ function App() {
   const [q, setQ] = useState("");
   const [hist, setHist] = useState({});
   const [sec, setSec] = useState({});
+  const [cloud, setCloud] = useState(false); // sincronização com Supabase ativa
 
   useEffect(() => {
     const a = store.get("cm_weights"); if (a) { try { setW(JSON.parse(a.value)); } catch {} }
     const b = store.get("cm_watch"); if (b) { try { setWatch(JSON.parse(b.value)); } catch {} }
     setHist(loadHist());
     const c = store.get("cm_sec"); if (c) { try { setSec(JSON.parse(c.value)); } catch {} }
+    // puxa histórico e watchlist da nuvem e mescla com o local (união por timestamp)
+    cloudLoadHist().then(ch => { setCloud(true); setHist(prev => mergeHist(prev, ch)); }).catch(()=>{});
+    cloudLoadWatch().then(cw => setWatch(prev => {
+      const merged = { ...cw, ...prev };
+      store.set("cm_watch", JSON.stringify(merged));
+      return merged;
+    })).catch(()=>{});
   }, []);
 
   // checa contratos no GoPlus em background (cache 12h por token, poda após 7d)
@@ -470,8 +521,11 @@ function App() {
   const toggleWatch = useCallback((t) => {
     setWatch(prev => {
       const next = { ...prev };
-      if (next[t.key]) delete next[t.key];
-      else next[t.key] = { sym:t.sym, chain:t.chain, addr:t.addr, url:t.url, savedAt:Date.now(), priceAt:t.price||0, mcapAt:t.mcap||0 };
+      if (next[t.key]) { delete next[t.key]; cloudDelWatch(t.key); }
+      else {
+        next[t.key] = { sym:t.sym, chain:t.chain, addr:t.addr, url:t.url, savedAt:Date.now(), priceAt:t.price||0, mcapAt:t.mcap||0 };
+        cloudSaveWatch(t.key, next[t.key]);
+      }
       store.set("cm_watch", JSON.stringify(next));
       return next;
     });
@@ -720,6 +774,7 @@ function App() {
           </div>
         </div>
         <div className="topright">
+          {cloud && <div className="volpill" title="histórico e watchlist sincronizados no Supabase — qualquer dispositivo vê os mesmos dados">☁ sync</div>}
           {chainVol && <div className="volpill">🔊 maior volume agora · {CHAIN_LABEL[chainVol.chain]||chainVol.chain.toUpperCase()} · {fmtUsd(chainVol.vol)}</div>}
           <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
             <button className="scanbtn" onClick={scan} disabled={loading}>{loading ? "minerando…" : "↻ escanear"}</button>
