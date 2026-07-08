@@ -13,6 +13,7 @@ Scanner de gemas low-cap com **Gem Score** — descobre, pontua e rankeia tokens
 
 ### Presets de estratégia
 - **Padrão** — equilíbrio para descoberta geral.
+- **Lançamento** — prioriza o sub-score **FAST** (momentum de 5m/1h): pega memes e tokens recém-nascidos acelerando *agora*, quando o momentum de 6h/24h ainda nem registrou. Combine com o filtro de idade máx (1-2 dias) para o modo sniper completo.
 - **Consolidação** — prioriza o sub-score **FLAT**: tokens em lateralidade (preço estável em 6h/24h) mas *vivos* (volume girando ≥5% da liquidez, 20+ compras/dia) e maduros (72h+). Detecta acumulação silenciosa aguardando explosão — token morto ou recém-nascido não engana o score.
 
 ### Segurança de contrato (GoPlus, automática a cada scan)
@@ -91,7 +92,6 @@ Conectado ao GitHub, cada push publica automaticamente.
 ## Roadmap
 
 - Login/senha com RLS por usuário no Supabase
-- Preset **Lançamento** (momentum 5m/1h para memes recém-nascidos)
 - Smart Money na Solana (Helius free tier)
 - Auto-refresh com diff entre scans
 

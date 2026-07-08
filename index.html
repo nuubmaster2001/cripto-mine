@@ -453,14 +453,16 @@ async function fetchSecurity(chain, addrs) {
 const CHAINS = ["solana","ethereum","bsc","base","arbitrum","polygon","tron","sui","avalanche","hyperliquid"];
 const CHAIN_LABEL = { bsc:"BSC", ethereum:"ETH", solana:"SOL", base:"BASE", arbitrum:"ARB", polygon:"POLY", tron:"TRON", sui:"SUI", avalanche:"AVAX", hyperliquid:"HYPE" };
 const GMGN_SLUG = { solana:"sol", ethereum:"eth", bsc:"bsc", base:"base", tron:"tron", blast:"blast", arbitrum:"arb", avalanche:"avax", polygon:"polygon" };
-const DEFAULT_W = { hype:22, momentum:20, liq:18, volume:15, buys:10, age:15, flat:0 };
+const DEFAULT_W = { hype:22, momentum:20, liq:18, volume:15, buys:10, age:15, flat:0, fast:0 };
 const PRESETS = {
   default: DEFAULT_W,
   // flat: recompensa lateralidade (ch6 e ch24 baixos em valor absoluto)
   // momentum zerado pra não premiar quem já está em pump
-  consolidation: { hype:10, momentum:0, liq:25, volume:8, buys:15, age:20, flat:22 }
+  consolidation: { hype:10, momentum:0, liq:25, volume:8, buys:15, age:20, flat:22, fast:0 },
+  // fast: momentum de 5m/1h — pega memes recém-nascidos acelerando agora; 6h/24h chega tarde demais
+  launch: { hype:18, momentum:5, liq:12, volume:12, buys:15, age:0, flat:0, fast:28 }
 };
-const sameW = (a,b) => ["hype","momentum","liq","volume","buys","age","flat"].every(k => a[k]===b[k]);
+const sameW = (a,b) => ["hype","momentum","liq","volume","buys","age","flat","fast"].every(k => (a[k]||0)===(b[k]||0));
 // per-chain discovery seeds: search pairs against each chain's main quote asset
 // GeckoTerminal network ids (lowercase, differ from DexScreener chain ids)
 const GT_NET = { bsc:"bsc", ethereum:"eth", solana:"solana", base:"base", arbitrum:"arbitrum", polygon:"polygon_pos", avalanche:"avax", sui:"sui", tron:"tron" };
@@ -535,12 +537,14 @@ function subScores(t) {
   const life = clamp01((t.liq > 0 ? (t.vol24||0)/t.liq : 0) / 0.05) * clamp01((t.buys||0)/20);
   const mature = h != null ? clamp01((h - 24) / 48) : 0.5; // <24h vale 0, 72h+ vale 1
   const flat = (0.55 * flat6 + 0.45 * flat24) * life * mature;
-  return { hype, momentum:mom, liq:liqHealth, volume:volTr, buys:buyP, age, flat };
+  // fast: momentum imediato (5m/1h) — o sinal que importa em lançamentos; satura em +8%/5m e +25%/1h
+  const fast = 0.5*clamp01((t.chM5||0)/8) + 0.5*clamp01((t.chH1||0)/25);
+  return { hype, momentum:mom, liq:liqHealth, volume:volTr, buys:buyP, age, flat, fast };
 }
 function scoreToken(t, w) {
   const s = subScores(t);
-  const tw = (w.hype+w.momentum+w.liq+w.volume+w.buys+w.age+(w.flat||0)) || 1;
-  const raw = (s.hype*w.hype + s.momentum*w.momentum + s.liq*w.liq + s.volume*w.volume + s.buys*w.buys + s.age*w.age + s.flat*(w.flat||0)) / tw;
+  const tw = (w.hype+w.momentum+w.liq+w.volume+w.buys+w.age+(w.flat||0)+(w.fast||0)) || 1;
+  const raw = (s.hype*w.hype + s.momentum*w.momentum + s.liq*w.liq + s.volume*w.volume + s.buys*w.buys + s.age*w.age + s.flat*(w.flat||0) + s.fast*(w.fast||0)) / tw;
   return { score: Math.round(raw*100), sub:s };
 }
 async function getJSON(url) { const r = await fetch(url); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }
@@ -846,7 +850,7 @@ function App() {
   const inspected = useMemo(() => inspectedRaw ? { ...inspectedRaw, ...scoreToken(inspectedRaw, w), cat: classifyToken(inspectedRaw) } : null, [inspectedRaw, w]);
 
   const rows = tab === "radar" ? filtered : watchList;
-  const WB = [["hype","HYPE","var(--gold)"],["momentum","MOM","var(--teal)"],["liq","LIQ","var(--teal)"],["volume","VOL","var(--gold)"],["buys","BUY","var(--ok)"],["age","AGE","var(--violet)"],["flat","FLAT","#7fb0ab"]];
+  const WB = [["hype","HYPE","var(--gold)"],["momentum","MOM","var(--teal)"],["liq","LIQ","var(--teal)"],["volume","VOL","var(--gold)"],["buys","BUY","var(--ok)"],["age","AGE","var(--violet)"],["flat","FLAT","#7fb0ab"],["fast","FAST","#F2A65E"]];
 
   const exportCSV = () => {
     const cols = ["score","grade","sym","fullname","chain","contract","mcap","fdv","fdv_mult","liq","liq_mcap_pct","vol24","vol_accel","ch6","ch24","age_h","boost","url"];
@@ -1045,6 +1049,7 @@ function App() {
           <div className="tunehead">
             <span>Gem Score · pesos</span>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              <button className="ghost" style={sameW(w,PRESETS.launch)?{borderColor:"var(--gold)",color:"var(--text)"}:undefined} onClick={()=>persistW(PRESETS.launch)} title="memes/lançamentos: momentum 5m-1h pesa mais; combine com idade máx 1-2 dias">Lançamento</button>
               <button className="ghost" style={sameW(w,PRESETS.consolidation)?{borderColor:"var(--gold)",color:"var(--text)"}:undefined} onClick={()=>persistW(PRESETS.consolidation)}>Consolidação</button>
               <button className="ghost" style={sameW(w,PRESETS.default)?{borderColor:"var(--gold)",color:"var(--text)"}:undefined} onClick={()=>persistW(PRESETS.default)}>Padrão</button>
               <button className="ghost" onClick={()=>setTune(t=>!t)}>{tune?"ocultar":"ajustar pesos"}</button>
@@ -1052,10 +1057,10 @@ function App() {
           </div>
           {tune && (
             <div className="weights">
-              {[["hype","Hype / boost"],["momentum","Momentum"],["liq","Liquidez p/ saída"],["volume","Volume / mcap"],["buys","Pressão de compra"],["age","Idade ideal"],["flat","Lateralidade (consolidação)"]].map(([k,lbl])=>(
+              {[["hype","Hype / boost"],["momentum","Momentum"],["liq","Liquidez p/ saída"],["volume","Volume / mcap"],["buys","Pressão de compra"],["age","Idade ideal"],["flat","Lateralidade (consolidação)"],["fast","Momentum rápido (5m/1h)"]].map(([k,lbl])=>(
                 <div className="wt" key={k}>
-                  <label>{lbl} <b>{w[k]}</b></label>
-                  <input type="range" min="0" max="40" value={w[k]} onChange={e=>persistW({...w,[k]:+e.target.value})}/>
+                  <label>{lbl} <b>{w[k]||0}</b></label>
+                  <input type="range" min="0" max="40" value={w[k]||0} onChange={e=>persistW({...w,[k]:+e.target.value})}/>
                 </div>
               ))}
             </div>
