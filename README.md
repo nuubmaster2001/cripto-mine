@@ -5,7 +5,7 @@ Scanner de gemas low-cap com **Gem Score** — descobre, pontua e rankeia tokens
 ## O que faz
 
 ### Radar
-- Varre tokens recém-perfilados e em alta no **DexScreener** e pools novos/quentes por rede no **GeckoTerminal** (BSC, Base, Solana, Ethereum e mais).
+- Varre tokens recém-perfilados e em alta no **DexScreener** e pools novos/quentes por rede no **GeckoTerminal** (BSC, Base, Solana, Ethereum, **Robinhood Chain** e mais).
 - Filtra pela sua faixa (market cap, liquidez mínima, idade, rede) e calcula um **Gem Score** transparente com pesos ajustáveis (hype, momentum, liquidez, volume, pressão de compra, idade, lateralidade).
 - Sinais: aceleração de volume (⚡ ignição), escada de momentum (5m/1h/6h/24h), FDV/diluição, liquidez para saída.
 - Painel de **narrativas em alta** (IA, Meme, DeFi, RWA, DePIN, GameFi…) e categoria por token.
@@ -17,7 +17,7 @@ Scanner de gemas low-cap com **Gem Score** — descobre, pontua e rankeia tokens
 - **Consolidação** — prioriza o sub-score **FLAT**: tokens em lateralidade (preço estável em 6h/24h) mas *vivos* (volume girando ≥5% da liquidez, 20+ compras/dia) e maduros (72h+). Detecta acumulação silenciosa aguardando explosão — token morto ou recém-nascido não engana o score.
 
 ### Segurança de contrato (GoPlus, automática a cada scan)
-- **EVM** (ETH, BSC, Base, Arbitrum, Polygon, Avax): honeypot, criador com histórico de honeypot, taxa de venda ≥10%, mintável, pausável, blacklist, código fechado — ou 🛡 "GoPlus ok" com % de LP queimada/travada.
+- **EVM** (ETH, BSC, Base, Robinhood Chain, Arbitrum, Polygon, Avax): honeypot, criador com histórico de honeypot, taxa de venda ≥10%, mintável, pausável, blacklist, código fechado — ou 🛡 "GoPlus ok" com % de LP queimada/travada.
 - **Solana**: token não-transferível, freeze authority (o "honeypot" da Solana), mint authority, saldo mutável.
 - Cache de 12h por token. O veredito final continua sendo seu, no GMGN.
 
@@ -35,7 +35,8 @@ Scanner de gemas low-cap com **Gem Score** — descobre, pontua e rankeia tokens
 - Cada carteira vem classificada (`compra` = veio do pool, `mint` = dev/alocação, `transfer` = presale/insider) com minutos desde o lançamento e link direto pro perfil no GMGN.
 - **Rastreamento com interseção**: carteiras presentes na janela inicial de 2+ tokens explodidos ganham ⭐ automaticamente — o sinal mais forte do app.
 - **Cruzar com o radar**: compara os trades recentes dos top tokens do radar com suas carteiras rastreadas — acertos viram chip roxo 🧠 no card e entram no feed de compras.
-- Suporte atual: chains EVM. (Solana no roadmap, via Helius.)
+- Suporte atual: chains EVM, incluindo Robinhood Chain (RPC nativo com janelas de 2000 blocos — extração bem mais rápida). Solana no roadmap, via Helius.
+- Em chains sem GMGN (ex.: Robinhood Chain), os links de segurança e de carteira caem para o explorer da rede (Blockscout).
 
 ## Como rodar
 
